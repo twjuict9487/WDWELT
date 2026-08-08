@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.deno-cache/
+deno.lock
+*.tsbuildinfo
+*.local
+.DS_Store
