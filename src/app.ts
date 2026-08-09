@@ -1,7 +1,20 @@
 import './styles.css';
-import { DEFAULT_PERIODS } from './demo';
-import { ApiTimetableParser, DemoTimetableParser } from './parsers';
-import { createDebugInstant, getScheduleStatus, getTaipeiParts } from './schedule';
+import {
+  PERIODS,
+  createDebugInstant,
+  getHomeScheduleState,
+  getTaipeiParts,
+  type HomeScheduleState,
+  type HomeTab,
+  type ScheduledClass,
+} from './schedule';
+import {
+  loadPreferences,
+  savePreferences,
+  type FontSize,
+  type Preferences,
+  type Theme,
+} from './preferences';
 import {
   clearAllProgress,
   deleteTimetable,
@@ -9,23 +22,32 @@ import {
   normalizeClassName,
   persistState,
   replaceTimetable,
+  restoreProgress,
   updateProgress,
 } from './storage';
-import type {
-  AppState,
-  Course,
-  DraftEntry,
-  TimetableParseResult,
-} from './types';
+import type { AppState, Course, CourseProgress, DraftEntry } from './types';
 
-type Screen = 'home' | 'import' | 'confirm' | 'editor' | 'progress';
-type UploadStatus = { kind: 'idle' | 'loading' | 'warning' | 'error'; message: string };
+type Screen = 'home' | 'timetable' | 'progress' | 'class-picker' | 'settings';
+type TimetableIntent = 'create' | 'edit' | 'rebuild';
+type ToastKind = 'success' | 'error';
 
-interface EditorTarget {
-  originalWeekday: number | null;
-  originalPeriod: number | null;
-  weekday: number;
-  period: number;
+interface ProgressTarget {
+  courseId: string;
+  scheduledClass: ScheduledClass | null;
+  returnTab: HomeTab;
+}
+
+interface UndoRecord {
+  courseId: string;
+  previous: CourseProgress | undefined;
+  expiresAt: number;
+  timeoutId: number;
+}
+
+interface ToastState {
+  kind: ToastKind;
+  message: string;
+  showUndo: boolean;
 }
 
 function requireRoot(): HTMLDivElement {
@@ -35,22 +57,34 @@ function requireRoot(): HTMLDivElement {
 }
 
 const root = requireRoot();
-
 const weekdayNames = ['', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'];
-const viteEnv = (import.meta as ImportMeta & { env: { VITE_TIMETABLE_PARSER?: string } }).env;
-const parserMode = viteEnv.VITE_TIMETABLE_PARSER === 'api' ? 'api' : 'demo';
-const debugEnabled = new URLSearchParams(window.location.search).get('debug') === '1';
+const shortWeekdayNames = ['', '一', '二', '三', '四', '五', '六', '日'];
+const debugEnabled = new URLSearchParams(globalThis.location.search).get('debug') === '1';
 
 let state: AppState = loadState();
+let preferences: Preferences = loadPreferences();
 let screen: Screen = 'home';
-let draftEntries: DraftEntry[] = [];
-let draftWarnings: string[] = [];
-let editorTarget: EditorTarget | null = null;
-let progressCourseId: string | null = null;
-let selectedFile: File | null = null;
-let previewUrl: string | null = null;
-let uploadStatus: UploadStatus = { kind: 'idle', message: '' };
+let timetableIntent: TimetableIntent = 'create';
+let draftGrid = new Map<string, string>();
+let selectedGridCell: string | null = null;
+let progressTarget: ProgressTarget | null = null;
 let debugNow: Date | null = null;
+let activeHomeTab: HomeTab = 'next';
+let homeStateSignature = '';
+let undoRecord: UndoRecord | null = null;
+let toast: ToastState | null = null;
+
+function applyPreferences(next: Preferences): void {
+  document.documentElement.dataset.theme = next.theme;
+  document.documentElement.dataset.fontSize = next.fontSize;
+  document.documentElement.style.colorScheme = next.theme;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute(
+    'content',
+    next.theme === 'dark' ? '#121212' : '#f5f5f5',
+  );
+}
+
+applyPreferences(preferences);
 
 function escapeHtml(value: string): string {
   return value
@@ -61,6 +95,10 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#039;');
 }
 
+function gridKey(weekday: number, period: number): string {
+  return `${weekday}:${period}`;
+}
+
 function effectiveNow(): Date {
   return debugNow ? new Date(debugNow) : new Date();
 }
@@ -69,44 +107,177 @@ function courseById(courseId: string): Course | undefined {
   return state.courses.find((course) => course.courseId === courseId);
 }
 
-function formatNow(date: Date): string {
+function currentTimetableClasses(): Course[] {
+  if (!state.timetable) return [];
+  const ids = new Set(state.timetable.entries.map((entry) => entry.courseId));
+  return state.courses
+    .filter((course) => ids.has(course.courseId))
+    .sort((a, b) => a.className.localeCompare(b.className, 'zh-Hant'));
+}
+
+function formatClock(date: Date): string {
   return new Intl.DateTimeFormat('zh-TW', {
     timeZone: 'Asia/Taipei',
-    weekday: 'long',
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
   }).format(date);
 }
 
-function formatTimestamp(iso: string): string {
-  return new Intl.DateTimeFormat('zh-TW', {
-    timeZone: 'Asia/Taipei',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).format(new Date(iso));
+function formatRelativeTimestamp(iso: string, now: Date): string {
+  const updated = new Date(iso);
+  if (Number.isNaN(updated.getTime())) return '時間未知';
+  const nowParts = getTaipeiParts(now);
+  const updatedParts = getTaipeiParts(updated);
+  const nowDay = Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day);
+  const updatedDay = Date.UTC(updatedParts.year, updatedParts.month - 1, updatedParts.day);
+  const dayDifference = Math.round((nowDay - updatedDay) / 86_400_000);
+  const clock = formatClock(updated);
+  if (dayDifference === 0) return `今天 ${clock}`;
+  if (dayDifference === 1) return `昨天 ${clock}`;
+  return `${updatedParts.year}/${String(updatedParts.month).padStart(2, '0')}/${String(updatedParts.day).padStart(2, '0')} ${clock}`;
 }
 
-function formatClassDate(date: { year: number; month: number; day: number; weekday: number }, isToday: boolean): string {
-  if (isToday) return weekdayNames[date.weekday] ?? '';
-  return `${date.year}/${String(date.month).padStart(2, '0')}/${String(date.day).padStart(2, '0')} ${weekdayNames[date.weekday]}`;
+function formatClassDate(item: ScheduledClass): string {
+  const { year, month, day, weekday } = item.date;
+  return `${year}/${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')} ${weekdayNames[weekday]}`;
 }
 
-function button(id: string, label: string, kind = ''): string {
-  return `<button id="${id}" class="button ${kind}" type="button">${label}</button>`;
+function isToday(item: ScheduledClass, now: Date): boolean {
+  const today = getTaipeiParts(now);
+  return item.date.year === today.year && item.date.month === today.month && item.date.day === today.day;
 }
 
-function page(title: string, content: string): string {
+function button(id: string, label: string, kind = '', attributes = ''): string {
+  return `<button id="${id}" class="button ${kind}" type="button" ${attributes}>${label}</button>`;
+}
+
+function page(title: string, content: string, showSettings = false): string {
   return `
     <main class="app-shell">
-      <header class="page-header"><h1>${title}</h1></header>
+      <header class="page-header">
+        <h1>${title}</h1>
+        ${showSettings ? '<button id="open-settings" class="header-action" type="button">設定</button>' : ''}
+      </header>
       ${content}
     </main>
   `;
+}
+
+function renderToast(): string {
+  if (!toast) return '';
+  return `
+    <div class="toast ${toast.kind}" role="status" aria-live="polite">
+      <span>${toast.kind === 'success' ? '✓ ' : ''}${escapeHtml(toast.message)}</span>
+      ${toast.showUndo ? '<button id="undo-progress" type="button">復原</button>' : ''}
+    </div>
+  `;
+}
+
+function renderProgressDetails(courseId: string, now: Date): string {
+  const progress = state.progressByCourse[courseId];
+  return `
+    <section class="progress-summary" aria-label="上次進度">
+      <h3>上次進度</h3>
+      <p class="progress-value">${progress?.progress ? escapeHtml(progress.progress) : '尚未紀錄'}</p>
+      ${progress?.note ? `<h3>備註</h3><p class="progress-note">${escapeHtml(progress.note)}</p>` : ''}
+      ${progress?.updatedAt ? `<p class="last-updated">最後更新：${formatRelativeTimestamp(progress.updatedAt, now)}</p>` : ''}
+    </section>
+  `;
+}
+
+function renderNextCard(item: ScheduledClass | null, now: Date): string {
+  if (!item) {
+    return `
+      <section class="panel schedule-card">
+        <p class="eyebrow">下一堂</p>
+        <h2 class="empty-schedule">未來七天沒有課程</h2>
+      </section>
+    `;
+  }
+  const course = courseById(item.entry.courseId);
+  return `
+    <section class="panel schedule-card" data-view="next">
+      <p class="eyebrow">下一堂</p>
+      <h2 class="class-name">${escapeHtml(course?.className ?? '未知班級')}</h2>
+      <p class="period-time">${item.start}–${item.end}</p>
+      ${isToday(item, now) ? '' : `<p class="class-date">${formatClassDate(item)}</p>`}
+      ${renderProgressDetails(item.entry.courseId, now)}
+    </section>
+  `;
+}
+
+function renderUpdateCard(
+  item: ScheduledClass,
+  kind: 'current' | 'previous' | 'last',
+  now: Date,
+): string {
+  const course = courseById(item.entry.courseId);
+  const heading = kind === 'current' ? '目前課程' : kind === 'last' ? '今天最後一堂' : '上一堂課';
+  const action = kind === 'current' ? '更新目前進度' : kind === 'last' ? '更新今天最後一堂進度' : '更新上一堂進度';
+  return `
+    <section class="panel schedule-card" data-view="${kind}">
+      <p class="eyebrow">${heading}</p>
+      <h2 class="class-name">${escapeHtml(course?.className ?? '未知班級')}</h2>
+      <p class="period-time">${item.start}–${item.end}</p>
+      ${renderProgressDetails(item.entry.courseId, now)}
+      ${button('update-target-progress', action, 'primary')}
+    </section>
+  `;
+}
+
+function tabButton(tab: HomeTab, label: string): string {
+  const active = activeHomeTab === tab;
+  return `<button class="tab-button ${active ? 'active' : ''}" type="button" role="tab" data-tab="${tab}" aria-selected="${active}">${label}</button>`;
+}
+
+function scheduleSignature(schedule: HomeScheduleState): string {
+  return [
+    schedule.mode,
+    schedule.current?.startAt.toISOString() ?? '',
+    schedule.previousToday?.startAt.toISOString() ?? '',
+    schedule.next?.startAt.toISOString() ?? '',
+  ].join('|');
+}
+
+function syncDefaultTab(schedule: HomeScheduleState): void {
+  const signature = scheduleSignature(schedule);
+  if (signature !== homeStateSignature) {
+    activeHomeTab = schedule.defaultTab;
+    homeStateSignature = signature;
+  }
+}
+
+function renderScheduleContent(schedule: HomeScheduleState, now: Date): string {
+  if (schedule.mode === 'current' && schedule.current) {
+    return renderUpdateCard(schedule.current, 'current', now);
+  }
+  if (schedule.mode === 'gap' && schedule.previousToday) {
+    const className = courseById(schedule.previousToday.entry.courseId)?.className ?? '未知班級';
+    return `
+      <div class="tabs" role="tablist" aria-label="課間操作">
+        ${tabButton('next', '下一堂')}
+        ${tabButton('previous', `更新上一堂（${escapeHtml(className)}）`)}
+      </div>
+      ${activeHomeTab === 'previous'
+        ? renderUpdateCard(schedule.previousToday, 'previous', now)
+        : renderNextCard(schedule.next, now)}
+    `;
+  }
+  if (schedule.mode === 'after-school' && schedule.previousToday) {
+    const className = courseById(schedule.previousToday.entry.courseId)?.className ?? '未知班級';
+    return `
+      <section class="status-summary"><h2>今日課程已結束</h2></section>
+      <div class="tabs" role="tablist" aria-label="放學後操作">
+        ${tabButton('previous', `更新今天最後一堂（${escapeHtml(className)}）`)}
+        ${tabButton('next', '下一堂')}
+      </div>
+      ${activeHomeTab === 'next'
+        ? renderNextCard(schedule.next, now)
+        : renderUpdateCard(schedule.previousToday, 'last', now)}
+    `;
+  }
+  return renderNextCard(schedule.next, now);
 }
 
 function renderDebugControls(): string {
@@ -135,79 +306,117 @@ function renderHome(): void {
   if (!state.timetable) {
     const hasProgress = Object.keys(state.progressByCourse).length > 0;
     root.innerHTML = page('今天上到哪', `
+      ${renderToast()}
       <section class="panel empty-state">
-        <p>尚未匯入課表。</p>
-        <div class="button-stack">
-          ${button('open-import', '匯入課表', 'primary')}
-          ${button('load-demo', '載入 Demo 課表', 'secondary')}
-        </div>
+        <p>尚未建立課表。</p>
+        ${button('create-timetable', '建立課表', 'primary')}
       </section>
       ${hasProgress ? `
         <section class="panel data-panel">
           <h2>保留的進度資料</h2>
-          <p>刪除課表不會刪除進度。重新匯入相同科目與班級後會再次連結。</p>
+          <p>刪除課表不會刪除進度。重新建立相同班級後會再次連結。</p>
           ${button('clear-progress', '清除所有進度資料', 'danger')}
         </section>
       ` : ''}
       ${renderDebugControls()}
-    `);
-    bindHomeEvents();
+    `, true);
+    bindHomeEvents(null);
     return;
   }
 
   const now = effectiveNow();
-  const result = getScheduleStatus(state.timetable, now);
-  let scheduleCard = `
-    <section class="panel schedule-card">
-      <p class="eyebrow">課程狀態</p>
-      <h2>未來七天沒有課程</h2>
-    </section>
-  `;
-
-  if (result.kind !== 'none') {
-    const item = result.scheduledClass;
-    const course = courseById(item.entry.courseId);
-    const today = getTaipeiParts(now);
-    const isToday = item.date.year === today.year && item.date.month === today.month && item.date.day === today.day;
-    const progress = state.progressByCourse[item.entry.courseId];
-    scheduleCard = `
-      <section class="panel schedule-card">
-        <p class="eyebrow">${result.kind === 'current' ? '目前課程' : '下一堂課'}</p>
-        <h2>${escapeHtml(course?.subject ?? '未知科目')}</h2>
-        <p class="class-name">${escapeHtml(course?.className ?? '未知班級')}</p>
-        <dl class="details">
-          <div><dt>日期</dt><dd>${formatClassDate(item.date, isToday)}</dd></div>
-          <div><dt>時間</dt><dd>${item.entry.start}–${item.entry.end}</dd></div>
-          <div><dt>上次進度</dt><dd>${progress?.progress ? escapeHtml(progress.progress) : '尚未記錄'}</dd></div>
-          <div><dt>備註</dt><dd>${progress?.note ? escapeHtml(progress.note) : '—'}</dd></div>
-          ${progress ? `<div><dt>更新</dt><dd>${formatTimestamp(progress.updatedAt)}</dd></div>` : ''}
-        </dl>
-        ${button('update-progress', '更新進度', 'primary')}
-      </section>
-    `;
-    progressCourseId = item.entry.courseId;
-  } else {
-    progressCourseId = null;
-  }
+  const schedule = getHomeScheduleState(state.timetable, now);
+  syncDefaultTab(schedule);
+  const classes = currentTimetableClasses();
 
   root.innerHTML = page('今天上到哪', `
-    <p class="current-time">現在：${formatNow(now)}</p>
-    ${scheduleCard}
+    ${renderToast()}
+    ${renderScheduleContent(schedule, now)}
+    <section class="panel alternate-panel">
+      <h2>延後補登</h2>
+      ${button('choose-class', '選擇其他班級更新', 'secondary', classes.length ? '' : 'disabled')}
+    </section>
     <section class="panel actions-panel" aria-label="課表操作">
       <div class="button-stack">
-        ${button('edit-timetable', '查看／編輯課表', 'secondary')}
-        ${button('replace-timetable', '更換課表', 'secondary')}
+        ${button('edit-timetable', '編輯課表', 'secondary')}
+        ${button('rebuild-timetable', '重新建立課表', 'secondary')}
         ${button('delete-timetable', '刪除課表', 'danger')}
       </div>
     </section>
     <section class="panel data-panel">
       <h2>進度資料</h2>
-      <p>此操作與刪除課表分開，且無法復原。</p>
+      <p>只清除進度、備註與更新時間，不會刪除課表。</p>
       ${button('clear-progress', '清除所有進度資料', 'danger')}
     </section>
     ${renderDebugControls()}
-  `);
-  bindHomeEvents();
+  `, true);
+  bindHomeEvents(schedule);
+}
+
+function beginTimetable(intent: TimetableIntent): void {
+  timetableIntent = intent;
+  draftGrid = new Map();
+  selectedGridCell = null;
+  if (intent === 'edit' && state.timetable) {
+    for (const entry of state.timetable.entries) {
+      const className = courseById(entry.courseId)?.className;
+      if (className) draftGrid.set(gridKey(entry.weekday, entry.period), className);
+    }
+  }
+  screen = 'timetable';
+  render();
+}
+
+function openProgress(item: ScheduledClass, returnTab: HomeTab): void {
+  progressTarget = { courseId: item.entry.courseId, scheduledClass: item, returnTab };
+  screen = 'progress';
+  render();
+}
+
+function invalidateUndo(): void {
+  if (undoRecord) globalThis.clearTimeout(undoRecord.timeoutId);
+  undoRecord = null;
+}
+
+function armUndo(courseId: string, previous: CourseProgress | undefined): void {
+  invalidateUndo();
+  const expiresAt = Date.now() + 10_000;
+  const timeoutId = globalThis.setTimeout(() => {
+    if (!undoRecord || undoRecord.expiresAt !== expiresAt) return;
+    undoRecord = null;
+    if (toast?.showUndo) {
+      toast = null;
+      if (screen === 'home') render();
+    }
+  }, 10_000);
+  undoRecord = {
+    courseId,
+    previous: previous ? { ...previous } : undefined,
+    expiresAt,
+    timeoutId,
+  };
+  toast = { kind: 'success', message: '已儲存', showUndo: true };
+}
+
+function performUndo(): void {
+  const record = undoRecord;
+  if (!record || Date.now() >= record.expiresAt) {
+    invalidateUndo();
+    toast = { kind: 'error', message: '復原期限已過，無法復原。', showUndo: false };
+    render();
+    return;
+  }
+  try {
+    const restored = restoreProgress(state, record.courseId, record.previous);
+    persistState(restored);
+    state = restored;
+    invalidateUndo();
+    toast = { kind: 'success', message: '已復原最近一次進度儲存', showUndo: false };
+  } catch {
+    invalidateUndo();
+    toast = { kind: 'error', message: '復原失敗，進度未變更。', showUndo: false };
+  }
+  render();
 }
 
 function bindDebugEvents(): void {
@@ -216,336 +425,204 @@ function bindDebugEvents(): void {
     const time = (document.querySelector('#debug-time') as HTMLInputElement).value;
     try {
       debugNow = createDebugInstant(date, time);
+      homeStateSignature = '';
       render();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : '無法套用測試時間');
+      globalThis.alert(error instanceof Error ? error.message : '無法套用測試時間');
     }
   });
   document.querySelector('#reset-debug-time')?.addEventListener('click', () => {
     debugNow = null;
+    homeStateSignature = '';
     render();
   });
 }
 
-function draftFromStoredTimetable(): DraftEntry[] {
-  if (!state.timetable) return [];
-  return state.timetable.entries.map((entry) => {
-    const course = courseById(entry.courseId);
-    return {
-      weekday: entry.weekday,
-      period: entry.period,
-      start: entry.start,
-      end: entry.end,
-      subject: course?.subject ?? '',
-      className: course?.className ?? '',
-    };
-  });
-}
-
-async function loadDemo(): Promise<void> {
-  const parser = new DemoTimetableParser();
-  const result = await parser.parse(new File([], 'demo.png', { type: 'image/png' }));
-  loadParseResult(result);
-}
-
-function loadParseResult(result: TimetableParseResult): void {
-  const periods = new Map(result.periods.map((period) => [period.period, period]));
-  draftEntries = result.entries.map((entry) => {
-    const period = periods.get(entry.period);
-    return {
-      ...entry,
-      className: normalizeClassName(entry.className),
-      start: period?.start ?? '08:10',
-      end: period?.end ?? '09:00',
-    };
-  });
-  draftWarnings = result.warnings;
-  screen = 'confirm';
-  render();
-}
-
-function bindHomeEvents(): void {
-  document.querySelector('#open-import')?.addEventListener('click', () => {
-    screen = 'import';
+function bindHomeEvents(schedule: HomeScheduleState | null): void {
+  document.querySelector('#open-settings')?.addEventListener('click', () => {
+    screen = 'settings';
     render();
   });
-  document.querySelector('#load-demo')?.addEventListener('click', () => void loadDemo());
-  document.querySelector('#update-progress')?.addEventListener('click', () => {
-    if (!progressCourseId) return;
-    screen = 'progress';
-    render();
+  document.querySelector('#undo-progress')?.addEventListener('click', performUndo);
+  document.querySelector('#create-timetable')?.addEventListener('click', () => beginTimetable('create'));
+  document.querySelector('#edit-timetable')?.addEventListener('click', () => beginTimetable('edit'));
+  document.querySelector('#rebuild-timetable')?.addEventListener('click', () => {
+    if (!globalThis.confirm('重新建立會從空白課表開始，但既有進度會保留。要繼續嗎？')) return;
+    beginTimetable('rebuild');
   });
-  document.querySelector('#edit-timetable')?.addEventListener('click', () => {
-    draftEntries = draftFromStoredTimetable();
-    draftWarnings = [];
-    screen = 'confirm';
-    render();
+  document.querySelectorAll<HTMLButtonElement>('.tab-button').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      activeHomeTab = tab.dataset.tab as HomeTab;
+      render();
+    });
   });
-  document.querySelector('#replace-timetable')?.addEventListener('click', () => {
-    screen = 'import';
+  document.querySelector('#update-target-progress')?.addEventListener('click', () => {
+    if (!schedule) return;
+    if (schedule.mode === 'current' && schedule.current) openProgress(schedule.current, 'current');
+    else if (schedule.previousToday) openProgress(schedule.previousToday, 'previous');
+  });
+  document.querySelector('#choose-class')?.addEventListener('click', () => {
+    screen = 'class-picker';
     render();
   });
   document.querySelector('#delete-timetable')?.addEventListener('click', () => {
-    if (!window.confirm('確定刪除課表？既有進度會保留。')) return;
+    if (!globalThis.confirm('確定刪除課表？所有班級的既有進度會保留。')) return;
     state = deleteTimetable(state);
     persistState(state);
+    homeStateSignature = '';
     render();
   });
   document.querySelector('#clear-progress')?.addEventListener('click', () => {
-    if (!window.confirm('這會清除所有班級的進度、備註與更新時間。要繼續嗎？')) return;
-    if (!window.confirm('再次確認：清除後無法復原。')) return;
+    if (!globalThis.confirm('這只會清除所有班級的進度、備註與更新時間。課表會保留。要繼續嗎？')) return;
+    if (!globalThis.confirm('再次確認：所有進度資料清除後無法復原。')) return;
     state = clearAllProgress(state);
     persistState(state);
+    invalidateUndo();
+    toast = null;
     render();
   });
   bindDebugEvents();
 }
 
-function renderImport(): void {
-  const status = uploadStatus.kind === 'idle' ? '' : `
-    <p class="status ${uploadStatus.kind === 'error' ? 'error' : 'warning'}" role="status">${escapeHtml(uploadStatus.message)}</p>
-  `;
-  root.innerHTML = page('匯入課表', `
-    <section class="panel">
-      <p>選擇 JPG、PNG 或其他一般圖片。原始圖片只供本次預覽，不會寫入 localStorage。</p>
-      <label class="file-label" for="timetable-image">選擇課表圖片</label>
-      <input id="timetable-image" type="file" accept="image/*" />
-      ${previewUrl ? `<div class="preview-wrap"><img src="${previewUrl}" alt="已選擇的課表圖片預覽" /></div>` : '<p class="small-text">尚未選擇圖片。</p>'}
-      ${status}
-      <div class="button-stack">
-        <button id="start-parse" class="button primary" type="button" ${selectedFile && uploadStatus.kind !== 'loading' ? '' : 'disabled'}>
-          ${uploadStatus.kind === 'loading' ? '辨識中…' : '開始辨識'}
-        </button>
-        ${button('import-demo', '載入 Demo 結果', 'secondary')}
-        ${button('manual-create', '手動建立課表', 'secondary')}
-        ${button('import-back', '返回', 'quiet')}
-      </div>
-      <p class="small-text">目前模式：${parserMode === 'api' ? 'API parser' : 'Demo parser（尚未連接真實圖片辨識）'}</p>
-    </section>
-  `);
-
-  document.querySelector('#timetable-image')?.addEventListener('change', (event) => {
-    const input = event.currentTarget as HTMLInputElement;
-    selectedFile = input.files?.[0] ?? null;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    previewUrl = selectedFile ? URL.createObjectURL(selectedFile) : null;
-    uploadStatus = { kind: 'idle', message: '' };
-    render();
-  });
-  document.querySelector('#start-parse')?.addEventListener('click', () => void startParse());
-  document.querySelector('#import-demo')?.addEventListener('click', () => void loadDemo());
-  document.querySelector('#manual-create')?.addEventListener('click', () => {
-    draftEntries = [];
-    draftWarnings = [];
-    screen = 'confirm';
-    render();
-  });
-  document.querySelector('#import-back')?.addEventListener('click', () => {
-    screen = 'home';
-    render();
-  });
-}
-
-async function startParse(): Promise<void> {
-  if (!selectedFile) return;
-  if (parserMode !== 'api') {
-    uploadStatus = {
-      kind: 'warning',
-      message: '目前尚未連接真實圖片辨識。請載入 Demo 結果或手動建立課表。',
-    };
-    render();
-    return;
-  }
-
-  uploadStatus = { kind: 'loading', message: '正在上傳並辨識課表…' };
-  render();
-  try {
-    const parser = new ApiTimetableParser();
-    loadParseResult(await parser.parse(selectedFile));
-  } catch (error) {
-    uploadStatus = {
-      kind: 'error',
-      message: error instanceof Error ? error.message : '課表辨識失敗，請稍後再試。',
-    };
-    render();
-  }
-}
-
-function gridPeriods(): number[] {
-  const periods = new Set(DEFAULT_PERIODS.map((period) => period.period));
-  draftEntries.forEach((entry) => periods.add(entry.period));
-  return [...periods].sort((a, b) => a - b);
-}
-
-function entryAt(weekday: number, period: number): DraftEntry | undefined {
-  return draftEntries.find((entry) => entry.weekday === weekday && entry.period === period);
-}
-
-function renderConfirm(): void {
-  const rows = gridPeriods().map((period) => {
+function renderTimetable(): void {
+  const title = timetableIntent === 'edit' ? '編輯課表' : '建立課表';
+  const rows = PERIODS.map((period) => {
     const cells = [1, 2, 3, 4, 5].map((weekday) => {
-      const entry = entryAt(weekday, period);
+      const key = gridKey(weekday, period.period);
       return `
         <td>
-          <button class="grid-cell" type="button" data-weekday="${weekday}" data-period="${period}" aria-label="${weekdayNames[weekday]}第 ${period} 節${entry ? `，${escapeHtml(entry.subject)} ${escapeHtml(entry.className)}` : '，空堂'}">
-            ${entry ? `<strong>${escapeHtml(entry.subject)}</strong><span>${escapeHtml(entry.className)}</span>` : '<span class="empty-cell">—</span>'}
-          </button>
+          <input
+            class="class-input"
+            data-grid-key="${key}"
+            data-weekday="${weekday}"
+            data-period="${period.period}"
+            value="${escapeHtml(draftGrid.get(key) ?? '')}"
+            maxlength="20"
+            autocomplete="off"
+            inputmode="text"
+            aria-label="${weekdayNames[weekday]}第 ${period.period} 節班級"
+          />
         </td>
       `;
     }).join('');
-    return `<tr><th scope="row">${period}</th>${cells}</tr>`;
+    return `
+      <tr>
+        <th scope="row"><strong>第${period.period}節</strong><span>${period.start}<br />${period.end}</span></th>
+        ${cells}
+      </tr>
+    `;
   }).join('');
 
-  root.innerHTML = page('確認課表', `
-    ${draftWarnings.map((warning) => `<p class="status warning">${escapeHtml(warning)}</p>`).join('')}
-    <p>請點擊每個格子確認或修改。辨識結果不會自動儲存。</p>
-    <div class="timetable-scroll" tabindex="0" aria-label="週課表，可水平捲動">
-      <table class="timetable">
-        <thead><tr><th scope="col">節次</th><th scope="col">一</th><th scope="col">二</th><th scope="col">三</th><th scope="col">四</th><th scope="col">五</th></tr></thead>
+  root.innerHTML = page(title, `
+    <p>直接輸入每一格的班級。空格代表空堂，星期、節次與和平高中時間固定。</p>
+    ${timetableIntent === 'rebuild' ? '<p class="status warning">目前從空白課表重新建立；既有班級進度不會被刪除。</p>' : ''}
+    <div class="timetable-scroll" tabindex="0" aria-label="星期一至星期五、第一至第八節課表">
+      <table class="timetable edit-grid">
+        <thead>
+          <tr><th scope="col">節次</th>${[1, 2, 3, 4, 5].map((weekday) => `<th scope="col">${shortWeekdayNames[weekday]}</th>`).join('')}</tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="button-stack confirm-actions">
-      ${button('add-entry', '新增課程', 'secondary')}
-      ${button('save-timetable', '確認並儲存', 'primary')}
-      ${button('confirm-back', '返回', 'quiet')}
+    <p id="selected-cell-status" class="small-text" role="status">尚未選擇格子。</p>
+    <div class="button-stack">
+      ${button('clear-cell', '清空選取格子', 'danger', 'disabled')}
+      ${button('save-timetable', '儲存課表', 'primary')}
+      ${button('timetable-back', '返回', 'quiet')}
     </div>
   `);
 
-  document.querySelectorAll<HTMLButtonElement>('.grid-cell').forEach((cell) => {
-    cell.addEventListener('click', () => {
-      const weekday = Number(cell.dataset.weekday);
-      const period = Number(cell.dataset.period);
-      const existing = entryAt(weekday, period);
-      editorTarget = {
-        originalWeekday: existing ? weekday : null,
-        originalPeriod: existing ? period : null,
-        weekday,
-        period,
-      };
-      screen = 'editor';
-      render();
-    });
+  const updateSelectedCell = (input: HTMLInputElement): void => {
+    selectedGridCell = input.dataset.gridKey ?? null;
+    const weekday = Number(input.dataset.weekday);
+    const period = Number(input.dataset.period);
+    const status = document.querySelector<HTMLParagraphElement>('#selected-cell-status');
+    if (status) status.textContent = `已選擇：${weekdayNames[weekday]}第 ${period} 節`;
+    const clear = document.querySelector<HTMLButtonElement>('#clear-cell');
+    if (clear) clear.disabled = false;
+  };
+
+  document.querySelectorAll<HTMLInputElement>('.class-input').forEach((input) => {
+    input.addEventListener('focus', () => updateSelectedCell(input));
+    input.addEventListener('click', () => updateSelectedCell(input));
   });
-  document.querySelector('#add-entry')?.addEventListener('click', () => {
-    editorTarget = { originalWeekday: null, originalPeriod: null, weekday: 1, period: 1 };
-    screen = 'editor';
-    render();
+  document.querySelector('#clear-cell')?.addEventListener('click', () => {
+    if (!selectedGridCell) return;
+    const input = document.querySelector<HTMLInputElement>(`.class-input[data-grid-key="${selectedGridCell}"]`);
+    if (!input) return;
+    input.value = '';
+    input.focus();
   });
   document.querySelector('#save-timetable')?.addEventListener('click', () => {
-    if (draftEntries.length === 0 && !window.confirm('目前課表沒有任何課程，仍要儲存嗎？')) return;
-    state = replaceTimetable(state, draftEntries, effectiveNow());
+    const entries: DraftEntry[] = [];
+    document.querySelectorAll<HTMLInputElement>('.class-input').forEach((input) => {
+      const className = normalizeClassName(input.value);
+      if (!className) return;
+      entries.push({
+        weekday: Number(input.dataset.weekday),
+        period: Number(input.dataset.period),
+        className,
+      });
+    });
+    if (entries.length === 0 && !globalThis.confirm('目前 40 格都是空堂，仍要儲存空白課表嗎？')) return;
+    state = replaceTimetable(state, entries, effectiveNow());
     persistState(state);
+    homeStateSignature = '';
     screen = 'home';
     render();
   });
-  document.querySelector('#confirm-back')?.addEventListener('click', () => {
-    screen = state.timetable ? 'home' : 'import';
+  document.querySelector('#timetable-back')?.addEventListener('click', () => {
+    screen = 'home';
     render();
   });
 }
 
-function getEditorEntry(): DraftEntry | undefined {
-  if (!editorTarget || editorTarget.originalWeekday === null || editorTarget.originalPeriod === null) return undefined;
-  return entryAt(editorTarget.originalWeekday, editorTarget.originalPeriod);
-}
-
-function defaultTimes(period: number): { start: string; end: string } {
-  const inDraft = draftEntries.find((entry) => entry.period === period);
-  const standard = DEFAULT_PERIODS.find((item) => item.period === period);
-  return {
-    start: inDraft?.start ?? standard?.start ?? '08:10',
-    end: inDraft?.end ?? standard?.end ?? '09:00',
-  };
-}
-
-function renderEditor(): void {
-  if (!editorTarget) {
-    screen = 'confirm';
-    render();
-    return;
-  }
-  const entry = getEditorEntry();
-  const times = entry ?? defaultTimes(editorTarget.period);
-  root.innerHTML = page(entry ? '編輯課程' : '新增課程', `
-    <form id="entry-form" class="panel form-panel">
-      <label>科目<input name="subject" required maxlength="40" value="${escapeHtml(entry?.subject ?? '')}" autocomplete="off" /></label>
-      <label>班級<input name="className" required maxlength="30" value="${escapeHtml(entry?.className ?? '')}" autocomplete="off" /></label>
-      <label>星期
-        <select name="weekday">
-          ${[1, 2, 3, 4, 5].map((weekday) => `<option value="${weekday}" ${(entry?.weekday ?? editorTarget?.weekday) === weekday ? 'selected' : ''}>${weekdayNames[weekday]}</option>`).join('')}
-        </select>
-      </label>
-      <label>節次<input name="period" required type="number" min="1" max="20" inputmode="numeric" value="${entry?.period ?? editorTarget.period}" /></label>
-      <div class="field-row">
-        <label>開始時間<input name="start" required type="time" value="${times.start}" /></label>
-        <label>結束時間<input name="end" required type="time" value="${times.end}" /></label>
+function renderClassPicker(): void {
+  const courses = currentTimetableClasses();
+  root.innerHTML = page('選擇其他班級更新', `
+    <section class="panel">
+      <p>選擇目前課表內的班級，進行延後補登。</p>
+      <div class="class-list">
+        ${courses.map((course) => `<button class="button secondary class-choice" type="button" data-course-id="${course.courseId}">${escapeHtml(course.className)}</button>`).join('') || '<p>目前課表沒有班級。</p>'}
       </div>
-      <p id="entry-error" class="status error hidden" role="alert"></p>
-      <div class="button-stack">
-        <button class="button primary" type="submit">儲存修改</button>
-        ${entry ? button('clear-entry', '清空該格', 'danger') : ''}
-        ${button('editor-cancel', '取消', 'quiet')}
-      </div>
-    </form>
+      ${button('picker-back', '返回', 'quiet')}
+    </section>
   `);
-
-  document.querySelector('#entry-form')?.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
-    const next: DraftEntry = {
-      subject: String(formData.get('subject') ?? '').trim(),
-      className: normalizeClassName(String(formData.get('className') ?? '')),
-      weekday: Number(formData.get('weekday')),
-      period: Number(formData.get('period')),
-      start: String(formData.get('start') ?? ''),
-      end: String(formData.get('end') ?? ''),
-    };
-    const error = document.querySelector<HTMLParagraphElement>('#entry-error');
-    if (!next.subject || !next.className || !next.start || !next.end || next.start >= next.end) {
-      if (error) {
-        error.textContent = '請填寫科目、班級與有效時間；結束時間必須晚於開始時間。';
-        error.classList.remove('hidden');
-      }
-      return;
-    }
-    if (editorTarget?.originalWeekday !== null && editorTarget?.originalPeriod !== null) {
-      draftEntries = draftEntries.filter((item) => !(item.weekday === editorTarget?.originalWeekday && item.period === editorTarget?.originalPeriod));
-    }
-    draftEntries = draftEntries.filter((item) => !(item.weekday === next.weekday && item.period === next.period));
-    draftEntries.push(next);
-    screen = 'confirm';
-    render();
+  document.querySelectorAll<HTMLButtonElement>('.class-choice').forEach((choice) => {
+    choice.addEventListener('click', () => {
+      progressTarget = {
+        courseId: choice.dataset.courseId ?? '',
+        scheduledClass: null,
+        returnTab: activeHomeTab,
+      };
+      screen = 'progress';
+      render();
+    });
   });
-  document.querySelector('#clear-entry')?.addEventListener('click', () => {
-    if (editorTarget?.originalWeekday !== null && editorTarget?.originalPeriod !== null) {
-      draftEntries = draftEntries.filter((item) => !(item.weekday === editorTarget?.originalWeekday && item.period === editorTarget?.originalPeriod));
-    }
-    screen = 'confirm';
-    render();
-  });
-  document.querySelector('#editor-cancel')?.addEventListener('click', () => {
-    screen = 'confirm';
+  document.querySelector('#picker-back')?.addEventListener('click', () => {
+    screen = 'home';
     render();
   });
 }
 
 function renderProgress(): void {
-  const course = progressCourseId ? courseById(progressCourseId) : undefined;
-  if (!course || !progressCourseId) {
+  const course = progressTarget ? courseById(progressTarget.courseId) : undefined;
+  if (!course || !progressTarget) {
     screen = 'home';
     render();
     return;
   }
-  const previous = state.progressByCourse[progressCourseId];
-  const relevantEntry = state.timetable?.entries.find((entry) => entry.courseId === progressCourseId);
+  const previous = state.progressByCourse[course.courseId];
   root.innerHTML = page('更新進度', `
     <section class="panel course-summary">
-      <h2>${escapeHtml(course.subject)}｜${escapeHtml(course.className)}</h2>
-      ${relevantEntry ? `<p>${relevantEntry.start}–${relevantEntry.end}</p>` : ''}
+      <p class="eyebrow">確認更新班級</p>
+      <h2 class="class-name">${escapeHtml(course.className)}</h2>
+      <p class="period-time">${progressTarget.scheduledClass
+        ? `${progressTarget.scheduledClass.start}–${progressTarget.scheduledClass.end}`
+        : '延後補登'}</p>
     </section>
     <form id="progress-form" class="panel form-panel">
-      <label>進度<input name="progress" maxlength="120" value="${escapeHtml(previous?.progress ?? '')}" autocomplete="off" /></label>
+      <label>進度<input name="progress" maxlength="120" value="${escapeHtml(previous?.progress ?? '')}" autocomplete="off" placeholder="例如：P.56" /></label>
       <label>備註（選填）<textarea name="note" maxlength="300" rows="4">${escapeHtml(previous?.note ?? '')}</textarea></label>
       <div class="button-stack">
         <button class="button primary" type="submit">儲存</button>
@@ -556,18 +633,68 @@ function renderProgress(): void {
   document.querySelector('#progress-form')?.addEventListener('submit', (event) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget as HTMLFormElement);
-    state = updateProgress(
+    const previousProgress = previous ? { ...previous } : undefined;
+    const updated = updateProgress(
       state,
-      progressCourseId as string,
+      course.courseId,
       String(formData.get('progress') ?? ''),
       String(formData.get('note') ?? ''),
       effectiveNow(),
     );
-    persistState(state);
+    try {
+      persistState(updated);
+      state = updated;
+      armUndo(course.courseId, previousProgress);
+    } catch {
+      toast = { kind: 'error', message: '儲存失敗，進度未變更。', showUndo: false };
+    }
+    activeHomeTab = progressTarget?.returnTab ?? 'next';
     screen = 'home';
     render();
   });
   document.querySelector('#progress-cancel')?.addEventListener('click', () => {
+    activeHomeTab = progressTarget?.returnTab ?? 'next';
+    screen = 'home';
+    render();
+  });
+}
+
+function renderSettings(): void {
+  root.innerHTML = page('設定', `
+    <section class="panel settings-group" aria-labelledby="appearance-title">
+      <h2 id="appearance-title">外觀</h2>
+      <div class="setting-options" role="group" aria-label="外觀">
+        <button class="setting-option ${preferences.theme === 'dark' ? 'active' : ''}" type="button" data-theme="dark" aria-pressed="${preferences.theme === 'dark'}">深色</button>
+        <button class="setting-option ${preferences.theme === 'light' ? 'active' : ''}" type="button" data-theme="light" aria-pressed="${preferences.theme === 'light'}">淺色</button>
+      </div>
+    </section>
+    <section class="panel settings-group" aria-labelledby="font-size-title">
+      <h2 id="font-size-title">文字大小</h2>
+      <div class="setting-options three-options" role="group" aria-label="文字大小">
+        <button class="setting-option ${preferences.fontSize === 'small' ? 'active' : ''}" type="button" data-font-size="small" aria-pressed="${preferences.fontSize === 'small'}">小</button>
+        <button class="setting-option ${preferences.fontSize === 'medium' ? 'active' : ''}" type="button" data-font-size="medium" aria-pressed="${preferences.fontSize === 'medium'}">中</button>
+        <button class="setting-option ${preferences.fontSize === 'large' ? 'active' : ''}" type="button" data-font-size="large" aria-pressed="${preferences.fontSize === 'large'}">大</button>
+      </div>
+    </section>
+    ${button('settings-back', '返回首頁', 'quiet')}
+  `);
+  document.querySelectorAll<HTMLButtonElement>('.setting-option[data-theme]').forEach((choice) => {
+    choice.addEventListener('click', () => {
+      preferences = { ...preferences, theme: choice.dataset.theme as Theme };
+      savePreferences(preferences);
+      applyPreferences(preferences);
+      render();
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>('.setting-option[data-font-size]').forEach((choice) => {
+    choice.addEventListener('click', () => {
+      preferences = { ...preferences, fontSize: choice.dataset.fontSize as FontSize };
+      savePreferences(preferences);
+      applyPreferences(preferences);
+      render();
+    });
+  });
+  document.querySelector('#settings-back')?.addEventListener('click', () => {
     screen = 'home';
     render();
   });
@@ -576,14 +703,14 @@ function renderProgress(): void {
 function render(): void {
   switch (screen) {
     case 'home': renderHome(); break;
-    case 'import': renderImport(); break;
-    case 'confirm': renderConfirm(); break;
-    case 'editor': renderEditor(); break;
+    case 'timetable': renderTimetable(); break;
     case 'progress': renderProgress(); break;
+    case 'class-picker': renderClassPicker(); break;
+    case 'settings': renderSettings(); break;
   }
 }
 
-window.setInterval(() => {
+globalThis.setInterval(() => {
   if (screen === 'home' && !debugNow) render();
 }, 30_000);
 

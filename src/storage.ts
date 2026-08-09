@@ -2,34 +2,54 @@ import {
   TIMEZONE,
   type AppState,
   type Course,
+  type CourseProgress,
   type DraftEntry,
 } from './types';
 
-export const STORAGE_KEY = 'today-progress-g1:v1';
+export const STORAGE_KEY = 'today-progress-g1:v2';
+export const LEGACY_STORAGE_KEY = 'today-progress-g1:v1';
 
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 export const EMPTY_STATE: AppState = {
-  version: 1,
+  version: 2,
   timetable: null,
   courses: [],
   progressByCourse: {},
 };
 
 export function loadState(storage: StorageLike = localStorage): AppState {
+  storage.removeItem(LEGACY_STORAGE_KEY);
   const raw = storage.getItem(STORAGE_KEY);
   if (!raw) return structuredClone(EMPTY_STATE);
 
   try {
     const parsed = JSON.parse(raw) as Partial<AppState>;
-    if (parsed.version !== 1) return structuredClone(EMPTY_STATE);
+    if (parsed.version !== 2) return structuredClone(EMPTY_STATE);
+    const courses = Array.isArray(parsed.courses)
+      ? parsed.courses.flatMap((course) => {
+          const record = course as unknown as {
+            courseId?: unknown;
+            className?: unknown;
+            destination?: unknown;
+          };
+          const className = typeof record.className === 'string'
+            ? record.className
+            : typeof record.destination === 'string'
+              ? record.destination
+              : '';
+          if (typeof record.courseId !== 'string' || !normalizeClassName(className)) return [];
+          return [{ courseId: record.courseId, className: normalizeClassName(className) }];
+        })
+      : [];
     return {
-      version: 1,
+      version: 2,
       timetable: parsed.timetable ?? null,
-      courses: Array.isArray(parsed.courses) ? parsed.courses : [],
+      courses,
       progressByCourse: parsed.progressByCourse ?? {},
     };
   } catch {
@@ -41,17 +61,12 @@ export function persistState(state: AppState, storage: StorageLike = localStorag
   storage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-export function normalizeCoursePart(value: string): string {
+export function normalizeClassName(value: string): string {
   return value.trim().replace(/\s+/g, ' ');
 }
 
-export function normalizeClassName(value: string): string {
-  const normalized = normalizeCoursePart(value);
-  return normalized.replace(/^高(?=\d)/, '');
-}
-
-function courseKey(subject: string, className: string): string {
-  return `${normalizeCoursePart(subject).toLocaleLowerCase('zh-Hant')}\u0000${normalizeClassName(className).toLocaleLowerCase('zh-Hant')}`;
+function classKey(value: string): string {
+  return normalizeClassName(value).toLocaleLowerCase('zh-Hant');
 }
 
 function hashKey(input: string): string {
@@ -63,11 +78,10 @@ function hashKey(input: string): string {
   return (hash >>> 0).toString(36);
 }
 
-function resolveCourse(courses: Course[], subject: string, className: string): Course {
-  const cleanSubject = normalizeCoursePart(subject);
-  const cleanClassName = normalizeClassName(className);
-  const key = courseKey(cleanSubject, cleanClassName);
-  const existing = courses.find((course) => courseKey(course.subject, course.className) === key);
+function resolveCourse(courses: Course[], className: string): Course {
+  const normalized = normalizeClassName(className);
+  const key = classKey(normalized);
+  const existing = courses.find((course) => classKey(course.className) === key);
   if (existing) return existing;
 
   let courseId = `course_${hashKey(key)}`;
@@ -76,7 +90,7 @@ function resolveCourse(courses: Course[], subject: string, className: string): C
     courseId = `course_${hashKey(key)}_${suffix}`;
     suffix += 1;
   }
-  const course = { courseId, subject: cleanSubject, className: cleanClassName };
+  const course = { courseId, className: normalized };
   courses.push(course);
   return course;
 }
@@ -87,18 +101,20 @@ export function replaceTimetable(
   now: Date = new Date(),
 ): AppState {
   const courses = state.courses.map((course) => ({ ...course }));
-  const entries = draftEntries
-    .filter((entry) => normalizeCoursePart(entry.subject) && normalizeClassName(entry.className))
-    .map((entry) => {
-      const course = resolveCourse(courses, entry.subject, entry.className);
-      return {
-        weekday: entry.weekday,
-        period: entry.period,
-        start: entry.start,
-        end: entry.end,
-        courseId: course.courseId,
-      };
-    })
+  const entriesByPosition = new Map<string, DraftEntry>();
+
+  for (const entry of draftEntries) {
+    const className = normalizeClassName(entry.className);
+    if (!className || entry.weekday < 1 || entry.weekday > 5 || entry.period < 1 || entry.period > 8) continue;
+    entriesByPosition.set(`${entry.weekday}:${entry.period}`, { ...entry, className });
+  }
+
+  const entries = [...entriesByPosition.values()]
+    .map((entry) => ({
+      weekday: entry.weekday,
+      period: entry.period,
+      courseId: resolveCourse(courses, entry.className).courseId,
+    }))
     .sort((a, b) => a.weekday - b.weekday || a.period - b.period);
 
   return {
@@ -135,4 +151,15 @@ export function updateProgress(
       },
     },
   };
+}
+
+export function restoreProgress(
+  state: AppState,
+  courseId: string,
+  previous: CourseProgress | undefined,
+): AppState {
+  const progressByCourse = { ...state.progressByCourse };
+  if (previous) progressByCourse[courseId] = { ...previous };
+  else delete progressByCourse[courseId];
+  return { ...state, progressByCourse };
 }

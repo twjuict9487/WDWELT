@@ -1,5 +1,22 @@
 import { TIMEZONE, type Timetable, type TimetableEntry } from './types';
 
+export interface PeriodDefinition {
+  period: number;
+  start: string;
+  end: string;
+}
+
+export const PERIODS: readonly PeriodDefinition[] = [
+  { period: 1, start: '08:10', end: '09:00' },
+  { period: 2, start: '09:10', end: '10:00' },
+  { period: 3, start: '10:10', end: '11:00' },
+  { period: 4, start: '11:10', end: '12:00' },
+  { period: 5, start: '13:05', end: '13:55' },
+  { period: 6, start: '14:05', end: '14:55' },
+  { period: 7, start: '15:10', end: '16:00' },
+  { period: 8, start: '16:10', end: '17:00' },
+] as const;
+
 export interface TaipeiDateParts {
   year: number;
   month: number;
@@ -11,15 +28,23 @@ export interface TaipeiDateParts {
 
 export interface ScheduledClass {
   entry: TimetableEntry;
+  start: string;
+  end: string;
   startAt: Date;
   endAt: Date;
   date: { year: number; month: number; day: number; weekday: number };
 }
 
-export type ScheduleResult =
-  | { kind: 'current'; scheduledClass: ScheduledClass }
-  | { kind: 'next'; scheduledClass: ScheduledClass }
-  | { kind: 'none' };
+export type HomeMode = 'current' | 'gap' | 'after-school' | 'next-only';
+export type HomeTab = 'current' | 'next' | 'previous';
+
+export interface HomeScheduleState {
+  mode: HomeMode;
+  defaultTab: HomeTab;
+  current: ScheduledClass | null;
+  next: ScheduledClass | null;
+  previousToday: ScheduledClass | null;
+}
 
 const partsFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: TIMEZONE,
@@ -80,40 +105,76 @@ export function taipeiDateToInstant(
   return new Date(Date.UTC(date.year, date.month - 1, date.day, hour - 8, minute));
 }
 
-export function getScheduleStatus(
-  timetable: Timetable | null,
-  now: Date = new Date(),
-): ScheduleResult {
-  if (!timetable || timetable.entries.length === 0) return { kind: 'none' };
-  const today = getTaipeiParts(now);
-  let nearest: ScheduledClass | null = null;
+export function getPeriodDefinition(period: number): PeriodDefinition | undefined {
+  return PERIODS.find((definition) => definition.period === period);
+}
 
+function scheduledClassForDate(
+  entry: TimetableEntry,
+  date: { year: number; month: number; day: number; weekday: number },
+): ScheduledClass | null {
+  const period = getPeriodDefinition(entry.period);
+  if (!period) return null;
+  return {
+    entry,
+    start: period.start,
+    end: period.end,
+    startAt: taipeiDateToInstant(date, period.start),
+    endAt: taipeiDateToInstant(date, period.end),
+    date,
+  };
+}
+
+function classesOnDate(
+  timetable: Timetable,
+  date: { year: number; month: number; day: number; weekday: number },
+): ScheduledClass[] {
+  return timetable.entries
+    .filter((entry) => entry.weekday === date.weekday)
+    .map((entry) => scheduledClassForDate(entry, date))
+    .filter((item): item is ScheduledClass => item !== null)
+    .sort((a, b) => a.startAt.getTime() - b.startAt.getTime());
+}
+
+function findNextClass(timetable: Timetable, now: Date, today: TaipeiDateParts): ScheduledClass | null {
   for (let offset = 0; offset <= 7; offset += 1) {
     const date = addCalendarDays(today, offset);
-    const entries = timetable.entries
-      .filter((entry) => entry.weekday === date.weekday)
-      .sort((a, b) => a.start.localeCompare(b.start));
+    const dateOnly = { year: date.year, month: date.month, day: date.day, weekday: date.weekday };
+    const next = classesOnDate(timetable, dateOnly).find((item) => item.startAt.getTime() > now.getTime());
+    if (next) return next;
+  }
+  return null;
+}
 
-    for (const entry of entries) {
-      const startAt = taipeiDateToInstant(date, entry.start);
-      const endAt = taipeiDateToInstant(date, entry.end);
-      const scheduledClass = {
-        entry,
-        startAt,
-        endAt,
-        date: { year: date.year, month: date.month, day: date.day, weekday: date.weekday },
-      };
-      if (startAt.getTime() <= now.getTime() && now.getTime() < endAt.getTime()) {
-        return { kind: 'current', scheduledClass };
-      }
-      if (startAt.getTime() > now.getTime() && (!nearest || startAt < nearest.startAt)) {
-        nearest = scheduledClass;
-      }
-    }
-    if (nearest) return { kind: 'next', scheduledClass: nearest };
+export function getHomeScheduleState(
+  timetable: Timetable | null,
+  now: Date = new Date(),
+): HomeScheduleState {
+  if (!timetable || timetable.entries.length === 0) {
+    return { mode: 'next-only', defaultTab: 'next', current: null, next: null, previousToday: null };
   }
 
-  return { kind: 'none' };
+  const today = getTaipeiParts(now);
+  const dateOnly = { year: today.year, month: today.month, day: today.day, weekday: today.weekday };
+  const todayClasses = classesOnDate(timetable, dateOnly);
+  const current = todayClasses.find(
+    (item) => item.startAt.getTime() <= now.getTime() && now.getTime() < item.endAt.getTime(),
+  ) ?? null;
+  const ended = todayClasses.filter((item) => item.endAt.getTime() <= now.getTime());
+  const previousToday = ended.at(-1) ?? null;
+  const upcomingToday = todayClasses.find((item) => item.startAt.getTime() > now.getTime()) ?? null;
+  const next = upcomingToday ?? findNextClass(timetable, now, today);
+
+  if (current) {
+    return { mode: 'current', defaultTab: 'current', current, next, previousToday };
+  }
+  if (previousToday && upcomingToday) {
+    return { mode: 'gap', defaultTab: 'next', current: null, next, previousToday };
+  }
+  if (previousToday && !upcomingToday) {
+    return { mode: 'after-school', defaultTab: 'previous', current: null, next, previousToday };
+  }
+  return { mode: 'next-only', defaultTab: 'next', current: null, next, previousToday: null };
 }
 
 export function createDebugInstant(date: string, time: string): Date {

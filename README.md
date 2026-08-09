@@ -1,38 +1,74 @@
-# 今天上到哪 — G1 frontend bone prototype
+# 今天上到哪 — Teacher G1
 
-這是一個以教師為主要使用者、mobile-first 的課程進度網站骨架。主要驗證尺寸是 iPhone 12 Safari 的 390 × 844 CSS pixels；介面為繁體中文，時間判斷固定使用 `Asia/Taipei`。
+給教師使用的 mobile-first 手動課表與進度工具。首頁只處理三件事：顯示目前／下一堂班級、時間，以及該班上次進度。
 
-這不是完整的 G1，也沒有宣稱完成真正的 AI／OCR 圖片辨識。
+主要驗證尺寸是 iPhone 12 Safari 的 390 × 844 CSS pixels。介面使用繁體中文，時間判斷固定為 `Asia/Taipei`。
 
-## 目前進度
+## 功能範圍
 
-已完成：
+- 手動建立星期一至星期五、第 1～8 節的固定 8×5 課表。
+- 每格只填班級；空格代表空堂。
+- 依時間顯示目前課程、下一堂、課間或今日課程結束狀態。
+- 首頁直接顯示該班上次進度、非空備註與最後更新時間。
+- 進度使用自由文字並明確按下「儲存」。
+- 最近一次進度 Save 可在 10 秒內復原。
+- 課表、班級與進度保存在 localStorage。
+- `?debug=1` 提供測試日期與時間控制。
 
-- 首頁空狀態與 Demo 課表載入。
-- 一般圖片選擇、預覽，以及尚未連接真實辨識時的明確提示。
-- Demo／API parser boundary。
-- 密集五日週課表確認畫面。
-- 點擊格子後修改科目、班級、星期、節次、開始及結束時間。
-- 新增課程、清空格子及人工確認後儲存。
-- `Asia/Taipei` 目前／下一堂課判斷，每 30 秒自動更新。
-- `?debug=1` 測試日期與時間控制。
-- 課程進度、備註及自動 timestamp。
-- `today-progress-g1:v1` localStorage 持久化。
-- 穩定 `courseId`；更換課表後，相同課程會保留既有進度。
-- 刪除課表與清除所有進度資料分開處理。
-- iPhone 12 safe area、44px touch targets、16px inputs，以及整頁無水平 overflow。
-- 15 個 schedule／storage tests、TypeScript typecheck、production build 與 390 × 844 browser smoke test。
+本專案不處理學期、假日、臨時調課、通知、日曆、帳號、同步、匯出或匯入。
 
-尚未完成：
+## 外觀與文字設定
 
-- 真正的 AI／OCR 圖片辨識後端。
-- 真實 API integration 測試。
-- Student flow。
-- 正式部署與跨網路存取。
+網站預設直接使用低刺激深色外觀及中等文字。設定畫面只包含：
 
-## 立即啟動：使用目前電腦已有的 Deno
+- 外觀：深色／淺色
+- 文字大小：小／中／大
 
-目前這台 Windows 電腦已有 Deno，但沒有 Node.js/npm。在專案目錄開啟 PowerShell 後執行：
+設定使用獨立 localStorage key：
+
+```text
+today-progress-g1:preferences:v1
+```
+
+預設值：
+
+```text
+theme: dark
+fontSize: medium
+```
+
+`index.html` 在載入應用程式模組前同步讀取設定，並在 `<html>` 上預先標記深色背景，因此 fresh load 不需要先顯示淺色畫面再切換。
+
+文字大小對應：
+
+| 選項 | 正文字級 |
+| --- | --- |
+| 小 | 15px |
+| 中 | 17px |
+| 大 | 19px |
+
+即使選擇「小」，input、select 與 textarea 仍至少為 16px。
+
+## 進度復原
+
+進度儲存成功後，首頁顯示：
+
+```text
+✓ 已儲存　[復原]
+```
+
+復原只存在目前頁面的 JavaScript memory：
+
+- 只還原最近一次 Save 前的 `progress`、`note` 與 `updatedAt`。
+- 10 秒後自動失效。
+- 下一次 Save 取代前一次可復原內容。
+- 成功復原後立即失效。
+- Reload 後不保留。
+- 儲存或復原失敗時會顯示明確錯誤。
+
+## 立即啟動：Deno
+
+在專案目錄開啟 PowerShell：
 
 ```powershell
 deno run -A --node-modules-dir=auto npm:vite@7.3.6
@@ -50,21 +86,13 @@ http://localhost:5173/
 http://localhost:5173/?debug=1
 ```
 
-按 `Ctrl+C` 可停止網站。
+按 `Ctrl+C` 停止網站。
 
-## 使用 Node.js/npm 啟動
+## 使用 Node.js/npm
 
-若要使用 package scripts，需要 Node.js 20.19+ 或 22.12+。Windows 可先安裝 Node.js LTS：
-
-```powershell
-winget install --id OpenJS.NodeJS.LTS -e
-```
-
-安裝後關閉並重新開啟 PowerShell，再執行：
+需要 Node.js 20.19+ 或 22.12+：
 
 ```powershell
-node --version
-npm --version
 npm install
 npm run dev
 ```
@@ -78,105 +106,48 @@ npm run preview
 
 ## 在實體 iPhone 上操作
 
-電腦與 iPhone 必須連接同一台路由器。電腦可以使用有線網路，iPhone 使用同一個 LAN 的 Wi-Fi。
-
-1. 若本機 server 正在執行，先按 `Ctrl+C`。
-2. 允許其他 LAN 裝置連線：
-
-   ```powershell
-   deno run -A --node-modules-dir=auto npm:vite@7.3.6 --host 0.0.0.0
-   ```
-
-3. 在 PowerShell 執行 `ipconfig`，尋找目前使用中的網路介面之 `IPv4 Address`。
-4. 在 iPhone Safari 開啟 `http://電腦IPv4:5173/`。
-
-目前偵測到的電腦 LAN 位址是 `192.168.1.102`，因此目前可嘗試：
-
-```text
-http://192.168.1.102:5173/
-```
-
-測試時間控制：
-
-```text
-http://192.168.1.102:5173/?debug=1
-```
-
-IP 位址可能在重新連線或重開路由器後改變，請以當下的 `ipconfig` 結果為準。如果 Windows Firewall 詢問，允許 Deno 存取「私人網路」。若無法連線，請確認：
-
-- iPhone 的 Wi-Fi 位址也在 `192.168.1.x` 網段。
-- iPhone 沒有改用行動數據。
-- VPN、ZeroTier 或路由器的 client isolation 沒有阻擋區域網路。
-- PowerShell server 仍在執行，且電腦沒有進入睡眠。
-
-iPhone Safari 與電腦瀏覽器各自擁有獨立的 localStorage；在電腦建立的課表不會自動同步到 iPhone。
-
-## 可操作流程
-
-- 首頁載入 Demo 課表，或選擇圖片並預覽。
-- 預設 Demo 模式不會假裝辨識圖片；「開始辨識」會清楚說明尚未連接真實辨識。
-- 使用密集五日週課表確認結果，點格子修改科目、班級、星期、節次及時間，也可新增或清空格子。
-- 人工確認後才會寫入課表。
-- 首頁每 30 秒以台北時間重算目前／下一堂課，跨日課程會顯示實際日期。
-- 更新進度與備註，重新整理後仍會保留。
-- 更換課表時，相同的正規化 `subject + className` 會沿用穩定 `courseId` 與既有進度。
-- 刪除課表只刪課表；「清除所有進度資料」是分開且需要兩次確認的操作。
-
-## Parser 切換
-
-預設使用 `DemoTimetableParser`。這個模式提供密集、多班級資料來驗證 UI，不會分析上傳圖片。
-
-Node.js/npm 的 API mode：
+電腦與 iPhone 必須在同一個 LAN。啟動允許其他裝置連線的 server：
 
 ```powershell
-$env:VITE_TIMETABLE_PARSER='api'
-npm run dev
+deno run -A --node-modules-dir=auto npm:vite@7.3.6 --host 0.0.0.0
 ```
 
-Deno 的 API mode：
-
-```powershell
-$env:VITE_TIMETABLE_PARSER='api'
-deno run -A --node-modules-dir=auto npm:vite@7.3.6
-```
-
-`ApiTimetableParser` 會送出：
+使用 `ipconfig` 找出電腦的 IPv4 Address，然後在 iPhone Safari 開啟：
 
 ```text
-POST /api/parse-timetable
-Content-Type: multipart/form-data
-field: image
+http://電腦IPv4:5173/
 ```
 
-預期 response：
+各瀏覽器和裝置擁有獨立 localStorage，不會自動同步。
 
-```json
-{
-  "timezone": "Asia/Taipei",
-  "periods": [
-    { "period": 1, "start": "08:10", "end": "09:00" }
-  ],
-  "entries": [
-    {
-      "weekday": 1,
-      "period": 1,
-      "subject": "化學",
-      "className": "307"
-    }
-  ],
-  "warnings": []
-}
+## 固定節次
+
+| 節次 | 時間 |
+| --- | --- |
+| 1 | 08:10–09:00 |
+| 2 | 09:10–10:00 |
+| 3 | 10:10–11:00 |
+| 4 | 11:10–12:00 |
+| 5 | 13:05–13:55 |
+| 6 | 14:05–14:55 |
+| 7 | 15:10–16:00 |
+| 8 | 16:10–17:00 |
+
+星期、節次及時間由格子位置決定，不能自行修改。
+
+## 課表與進度資料
+
+主要資料使用：
+
+```text
+today-progress-g1:v2
 ```
 
-`weekday` 為 1（星期一）至 7（星期日）。前端不含 API key。API 回傳也只會先進入人工確認畫面，不會直接儲存。`高307` 會正規化為 `307`；教師姓名不在前端資料模型中，後端不得將教師姓名放進 `className`。
+班級會先 trim 並合併連續空白，再用正規化值建立穩定 `courseId`。相同班級出現在不同格時共用同一份進度；重新建立課表後仍沿用既有 `courseId` 與進度。
 
-## 儲存格式
-
-資料使用 localStorage key `today-progress-g1:v1`。只儲存結構化課表、course catalog 與進度，不儲存上傳圖片。圖片預覽使用一次性的 object URL。
+刪除課表不會刪除進度；清除所有進度也不會刪除課表。
 
 ## 測試
-
-使用 npm：
 
 ```powershell
 npm test
@@ -184,12 +155,6 @@ npm run typecheck
 npm run build
 ```
 
-目前沒有為了形式加入 ESLint、UI framework、資料庫或端對端瀏覽器套件。排程測試涵蓋第一堂前、上課中、堂間、放學後、週五到下週一、空堂、無課、跨日日期及 injected debug time；儲存測試涵蓋 reload、穩定 courseId、刪除課表保留進度與自動 timestamp。
+測試涵蓋固定節次、所有既有 schedule states、storage v2 identity 與 persistence、Basic Settings，以及最近一次進度 Save 的精確還原。
 
-## 已知限制
-
-- 真正 AI／OCR parser 尚未連接；目前只有可替換的 Demo／API boundary。
-- 未設定 API 後端時，任意圖片只會預覽，不會被辨識。
-- 本 prototype 只實作 Teacher flow，沒有 Student flow。
-- localStorage 只存在個別瀏覽器及個別裝置，沒有帳號或雲端同步。
-- LAN 開發網址只適用於同一個區域網路；這不是正式部署。
+專案沒有加入 UI framework、資料庫或額外瀏覽器測試套件。

@@ -2,15 +2,12 @@ export const TIMEZONE = 'Asia/Taipei' as const;
 
 export interface Course {
   courseId: string;
-  subject: string;
   className: string;
 }
 
 export interface TimetableEntry {
   weekday: number;
   period: number;
-  start: string;
-  end: string;
   courseId: string;
 }
 
@@ -28,37 +25,14 @@ export interface CourseProgress {
 }
 
 export interface AppState {
-  version: 1;
+  version: 2;
   timetable: Timetable | null;
   courses: Course[];
   progressByCourse: Record<string, CourseProgress>;
 }
 
-export interface ParserPeriod {
-  period: number;
-  start: string;
-  end: string;
-}
-
-export interface ParserEntry {
+export interface DraftEntry {
   weekday: number;
   period: number;
-  subject: string;
   className: string;
-}
-
-export interface TimetableParseResult {
-  timezone: typeof TIMEZONE;
-  periods: ParserPeriod[];
-  entries: ParserEntry[];
-  warnings: string[];
-}
-
-export interface TimetableParser {
-  parse(file: File): Promise<TimetableParseResult>;
-}
-
-export interface DraftEntry extends ParserEntry {
-  start: string;
-  end: string;
 }
