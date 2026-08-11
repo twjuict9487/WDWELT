@@ -3,6 +3,8 @@ import {
   PERIODS,
   createDebugInstant,
   getHomeScheduleState,
+  getTimelineScheduleState,
+  selectDefaultTimelineRole,
   taipeiDateToInstant,
 } from '../src/schedule';
 import { TIMEZONE, type Timetable, type TimetableEntry } from '../src/types';
@@ -164,6 +166,80 @@ describe('首頁狀態', () => {
     const schedule = timetable([entry(1, 1)]);
     expect(getHomeScheduleState(schedule, atTaipei('2026-08-10', '07:00')).previousToday).toBeNull();
     expect(getHomeScheduleState(schedule, atTaipei('2026-08-11', '12:00')).previousToday).toBeNull();
+  });
+});
+
+describe('首頁 Last / Current / Next timeline', () => {
+  it('上課中依固定角色提供 Last、Current、Next，且 Current 不重複', () => {
+    const result = getTimelineScheduleState(
+      timetable([
+        entry(1, 1, 'course_last'),
+        entry(1, 3, 'course_current'),
+        entry(1, 6, 'course_next'),
+      ]),
+      atTaipei('2026-08-10', '10:30'),
+    );
+    expect(result.last?.entry.courseId).toBe('course_last');
+    expect(result.current?.entry.courseId).toBe('course_current');
+    expect(result.next?.entry.courseId).toBe('course_next');
+    expect(result.defaultRole).toBe('current');
+  });
+
+  it('課間與午休沒有假的 Current，並跨空堂選最近 occurrence', () => {
+    const result = getTimelineScheduleState(
+      timetable([entry(1, 1, 'course_last'), entry(1, 6, 'course_next')]),
+      atTaipei('2026-08-10', '12:30'),
+    );
+    expect(result.current).toBeNull();
+    expect(result.last?.entry.courseId).toBe('course_last');
+    expect(result.next?.entry.courseId).toBe('course_next');
+    expect(result.defaultRole).toBe('next');
+  });
+
+  it('星期一第一堂前的 Last 可跨週末回到上星期五，Next 是今天第一堂', () => {
+    const result = getTimelineScheduleState(
+      timetable([entry(5, 8, 'course_friday'), entry(1, 1, 'course_monday')]),
+      atTaipei('2026-08-17', '07:30'),
+    );
+    expect(result.last?.entry.courseId).toBe('course_friday');
+    expect(result.last?.date).toEqual({ year: 2026, month: 8, day: 14, weekday: 5 });
+    expect(result.next?.entry.courseId).toBe('course_monday');
+    expect(result.next?.date).toEqual({ year: 2026, month: 8, day: 17, weekday: 1 });
+  });
+
+  it('星期五放學後的 Next 可跨每週課表邊界到下星期一', () => {
+    const result = getTimelineScheduleState(
+      timetable([entry(5, 8, 'course_friday'), entry(1, 1, 'course_monday')]),
+      atTaipei('2026-08-14', '17:30'),
+    );
+    expect(result.last?.entry.courseId).toBe('course_friday');
+    expect(result.next?.entry.courseId).toBe('course_monday');
+    expect(result.next?.date).toEqual({ year: 2026, month: 8, day: 17, weekday: 1 });
+  });
+
+  it('時間邊界沿用 start <= now < end，結束時該 occurrence 轉為 Last', () => {
+    const schedule = timetable([entry(1, 3, 'course_307'), entry(1, 4, 'course_205')]);
+    const atStart = getTimelineScheduleState(schedule, atTaipei('2026-08-10', '10:10'));
+    expect(atStart.current?.entry.courseId).toBe('course_307');
+    expect(atStart.last?.entry.courseId).not.toBe('course_307');
+    expect(atStart.next?.entry.courseId).toBe('course_205');
+
+    const atEnd = getTimelineScheduleState(schedule, atTaipei('2026-08-10', '11:00'));
+    expect(atEnd.current).toBeNull();
+    expect(atEnd.last?.entry.courseId).toBe('course_307');
+    expect(atEnd.next?.entry.courseId).toBe('course_205');
+  });
+
+  it('signature 只隨 occurrence context 改變，且 default 遵守 fallback', () => {
+    const schedule = timetable([entry(1, 1, 'course_307'), entry(1, 2, 'course_205')]);
+    const first = getTimelineScheduleState(schedule, atTaipei('2026-08-10', '09:01'));
+    const second = getTimelineScheduleState(schedule, atTaipei('2026-08-10', '09:05'));
+    expect(second.signature).toBe(first.signature);
+    expect(second.signature).toContain('last:course_307:2026-08-10:08:10:09:00');
+    expect(second.signature).toContain('next:course_205:2026-08-10:09:10:10:00');
+    expect(selectDefaultTimelineRole(first.last, null, first.next)).toBe('next');
+    expect(selectDefaultTimelineRole(first.last, null, null)).toBe('last');
+    expect(selectDefaultTimelineRole(null, null, null)).toBeNull();
   });
 });
 

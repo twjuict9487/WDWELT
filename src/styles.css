@@ -5,9 +5,9 @@
   --text: #e6e6e6;
   --text-muted: #a8a8a8;
   --border: #333333;
-  --primary: #7aa7ff;
+  --primary: #4f73b3;
   --danger: #ff7b7b;
-  --primary-text: #101522;
+  --primary-text: #f5f7fb;
   --warning-bg: #2c271b;
   --warning-border: #6d5c2b;
   --error-bg: #321f1f;
@@ -222,7 +222,7 @@ p {
 
 .button:focus-visible,
 .header-action:focus-visible,
-.tab-button:focus-visible,
+.timeline-card-toggle:focus-visible,
 .setting-option:focus-visible,
 .toast button:focus-visible,
 input:focus-visible,
@@ -239,7 +239,6 @@ textarea:focus-visible,
   font-weight: 800;
 }
 
-.schedule-card .class-name,
 .course-summary .class-name {
   max-width: 100%;
   margin-bottom: 6px;
@@ -248,7 +247,7 @@ textarea:focus-visible,
   overflow-wrap: anywhere;
 }
 
-.schedule-card .empty-schedule {
+.empty-schedule {
   font-size: 24px;
 }
 
@@ -259,75 +258,181 @@ textarea:focus-visible,
   font-weight: 700;
 }
 
-.class-date {
-  margin-bottom: 18px;
-  color: var(--text-muted);
-  font-size: var(--font-small);
+.timeline {
+  display: grid;
+  gap: 10px;
+  width: 100%;
 }
 
-.progress-summary {
-  padding-top: 16px;
-  margin-top: 16px;
-  margin-bottom: 18px;
-  border-top: 1px solid var(--border);
-}
-
-.progress-summary h3 {
-  color: var(--text-muted);
-  font-weight: 700;
-}
-
-.progress-value,
-.progress-note {
-  margin-bottom: 15px;
-  color: var(--text);
-  font-size: var(--font-body);
-  overflow-wrap: anywhere;
-}
-
-.last-updated {
-  margin-bottom: 0;
-  color: var(--text-muted);
-  font-size: var(--font-small);
-}
-
-.status-summary {
-  margin-bottom: 10px;
-  padding: 13px 14px;
+.timeline-card {
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 6px;
+  transition: padding 250ms ease-out, border-color 250ms ease-out;
 }
 
-.status-summary h2 {
-  margin: 0;
+.timeline-card.is-expanded {
+  padding: 18px;
+  border-color: var(--primary);
 }
 
-.tabs {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 6px;
-  margin-bottom: 10px;
-}
-
-.tab-button {
+.timeline-card-toggle {
+  display: block;
+  width: 100%;
   min-width: 0;
-  min-height: 48px;
-  padding: 7px 6px;
-  color: var(--text-muted);
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  font-weight: 700;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
+  min-height: 0;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  text-align: left;
   cursor: pointer;
 }
 
-.tab-button.active {
-  color: var(--primary-text);
-  background: var(--primary);
-  border-color: var(--primary);
+.timeline-shrink,
+.timeline-expanded-head {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    max-height 250ms ease-out,
+    opacity 250ms ease-out,
+    visibility 0s linear;
+}
+
+.timeline-shrink {
+  max-height: 150px;
+  opacity: 1;
+}
+
+.timeline-expanded-head {
+  max-height: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition-delay: 0s, 0s, 250ms;
+}
+
+.timeline-card.is-expanded .timeline-shrink {
+  max-height: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition-delay: 0s, 0s, 250ms;
+}
+
+.timeline-card.is-expanded .timeline-expanded-head {
+  max-height: 240px;
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.timeline-context {
+  margin-bottom: 4px;
+  color: var(--primary);
+  font-size: var(--font-small);
+  font-weight: 800;
+}
+
+.timeline-shrink-class {
+  min-width: 0;
+  margin-bottom: 2px;
+  font-size: 24px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.timeline-shrink-time {
+  color: var(--text-muted);
+  font-size: var(--font-small);
+  font-weight: 600;
+}
+
+.timeline-shrink-progress {
+  display: block;
+  min-width: 0;
+  margin-top: 5px;
+  overflow: hidden;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-class-name {
+  max-width: 100%;
+  margin-bottom: 5px;
+  font-size: clamp(38px, 12vw, 48px);
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+}
+
+.timeline-date {
+  color: var(--text-muted);
+  font-size: var(--font-small);
+  font-weight: 600;
+}
+
+.timeline-time {
+  margin-top: 2px;
+  font-size: 21px;
+  font-weight: 750;
+}
+
+.timeline-details {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 250ms ease-out, opacity 250ms ease-out;
+}
+
+.timeline-card.is-expanded .timeline-details {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.timeline-details-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.timeline-progress {
+  padding-top: 15px;
+  margin-top: 15px;
+  border-top: 1px solid var(--border);
+}
+
+.timeline-progress h3,
+.timeline-note h3 {
+  color: var(--text-muted);
+}
+
+.timeline-progress-value {
+  margin-bottom: 14px;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.timeline-note p {
+  margin-bottom: 14px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.timeline-updated {
+  margin-bottom: 14px;
+  color: var(--text-muted);
+  font-size: var(--font-small);
+}
+
+.timeline-cta {
+  margin-top: 2px;
 }
 
 .data-panel p,
@@ -509,6 +614,15 @@ textarea {
   margin-bottom: 14px;
 }
 
+.danger-zone {
+  margin-top: 28px;
+}
+
+.danger-zone h2 {
+  color: var(--danger);
+  font-size: 18px;
+}
+
 .setting-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -535,6 +649,32 @@ textarea {
   color: var(--primary-text);
   background: var(--primary);
   border-color: var(--primary);
+}
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  align-items: center;
+  padding: calc(20px + env(safe-area-inset-top)) 20px calc(20px + env(safe-area-inset-bottom));
+  background: rgb(0 0 0 / 65%);
+}
+
+.discard-dialog {
+  width: min(100%, 420px);
+  max-height: 100%;
+  padding: 20px;
+  margin: auto;
+  overflow-y: auto;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.discard-dialog p {
+  color: var(--text-muted);
 }
 
 code {

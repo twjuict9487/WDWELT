@@ -46,6 +46,16 @@ export interface HomeScheduleState {
   previousToday: ScheduledClass | null;
 }
 
+export type TimelineRole = 'last' | 'current' | 'next';
+
+export interface TimelineScheduleState {
+  last: ScheduledClass | null;
+  current: ScheduledClass | null;
+  next: ScheduledClass | null;
+  defaultRole: TimelineRole | null;
+  signature: string;
+}
+
 const partsFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: TIMEZONE,
   year: 'numeric',
@@ -144,6 +154,65 @@ function findNextClass(timetable: Timetable, now: Date, today: TaipeiDateParts):
     if (next) return next;
   }
   return null;
+}
+
+function findLastClass(timetable: Timetable, now: Date, today: TaipeiDateParts): ScheduledClass | null {
+  for (let offset = 0; offset >= -7; offset -= 1) {
+    const date = addCalendarDays(today, offset);
+    const dateOnly = { year: date.year, month: date.month, day: date.day, weekday: date.weekday };
+    const ended = classesOnDate(timetable, dateOnly)
+      .filter((item) => item.endAt.getTime() <= now.getTime());
+    const last = ended.at(-1);
+    if (last) return last;
+  }
+  return null;
+}
+
+function occurrenceIdentity(role: TimelineRole, item: ScheduledClass | null): string {
+  if (!item) return '';
+  const date = `${item.date.year}-${String(item.date.month).padStart(2, '0')}-${String(item.date.day).padStart(2, '0')}`;
+  return `${role}:${item.entry.courseId}:${date}:${item.start}:${item.end}`;
+}
+
+export function selectDefaultTimelineRole(
+  last: ScheduledClass | null,
+  current: ScheduledClass | null,
+  next: ScheduledClass | null,
+): TimelineRole | null {
+  if (current) return 'current';
+  if (next) return 'next';
+  if (last) return 'last';
+  return null;
+}
+
+export function getTimelineScheduleState(
+  timetable: Timetable | null,
+  now: Date = new Date(),
+): TimelineScheduleState {
+  if (!timetable || timetable.entries.length === 0) {
+    return { last: null, current: null, next: null, defaultRole: null, signature: '' };
+  }
+
+  const today = getTaipeiParts(now);
+  const dateOnly = { year: today.year, month: today.month, day: today.day, weekday: today.weekday };
+  const current = classesOnDate(timetable, dateOnly).find(
+    (item) => item.startAt.getTime() <= now.getTime() && now.getTime() < item.endAt.getTime(),
+  ) ?? null;
+  const last = findLastClass(timetable, now, today);
+  const next = findNextClass(timetable, now, today);
+  const signature = [
+    occurrenceIdentity('last', last),
+    occurrenceIdentity('current', current),
+    occurrenceIdentity('next', next),
+  ].join('|');
+
+  return {
+    last,
+    current,
+    next,
+    defaultRole: selectDefaultTimelineRole(last, current, next),
+    signature,
+  };
 }
 
 export function getHomeScheduleState(

@@ -1,13 +1,10 @@
 import './styles.css';
 import {
-  PERIODS,
-  createDebugInstant,
-  getHomeScheduleState,
-  getTaipeiParts,
-  type HomeScheduleState,
-  type HomeTab,
-  type ScheduledClass,
-} from './schedule';
+  normalizeProgressDraft,
+  progressDraftChanged,
+  timetableDraftSnapshot,
+  type ProgressDraft,
+} from './drafts';
 import {
   loadPreferences,
   savePreferences,
@@ -15,6 +12,15 @@ import {
   type Preferences,
   type Theme,
 } from './preferences';
+import {
+  PERIODS,
+  createDebugInstant,
+  getTimelineScheduleState,
+  getTaipeiParts,
+  type ScheduledClass,
+  type TimelineRole,
+  type TimelineScheduleState,
+} from './schedule';
 import {
   clearAllProgress,
   deleteTimetable,
@@ -25,16 +31,31 @@ import {
   restoreProgress,
   updateProgress,
 } from './storage';
+import {
+  orderedTimelineRoles,
+  resolveTimelineSelection,
+  shouldCenterTimelineCard,
+} from './timeline';
 import type { AppState, Course, CourseProgress, DraftEntry } from './types';
 
-type Screen = 'home' | 'timetable' | 'progress' | 'class-picker' | 'settings';
-type TimetableIntent = 'create' | 'edit' | 'rebuild';
+type Screen = 'home' | 'timetable' | 'progress' | 'settings';
+type TimetableIntent = 'create' | 'edit';
 type ToastKind = 'success' | 'error';
+
+type RoutePayload =
+  | { screen: 'home' }
+  | { screen: 'settings' }
+  | { screen: 'timetable'; intent: TimetableIntent }
+  | { screen: 'progress'; courseId: string; timeLabel: string };
+
+type AppRoute = RoutePayload & {
+  app: 'today-progress-g1';
+  index: number;
+};
 
 interface ProgressTarget {
   courseId: string;
-  scheduledClass: ScheduledClass | null;
-  returnTab: HomeTab;
+  timeLabel: string;
 }
 
 interface UndoRecord {
@@ -66,13 +87,19 @@ let preferences: Preferences = loadPreferences();
 let screen: Screen = 'home';
 let timetableIntent: TimetableIntent = 'create';
 let draftGrid = new Map<string, string>();
+let timetableOriginalSnapshot: string | null = null;
 let selectedGridCell: string | null = null;
 let progressTarget: ProgressTarget | null = null;
+let progressOriginalSnapshot: ProgressDraft | null = null;
 let debugNow: Date | null = null;
-let activeHomeTab: HomeTab = 'next';
-let homeStateSignature = '';
+let timelineContextSignature = '';
+let expandedTimelineRole: TimelineRole | null = null;
 let undoRecord: UndoRecord | null = null;
 let toast: ToastState | null = null;
+let discardDialog: HTMLDivElement | null = null;
+let currentRoute: AppRoute = { app: 'today-progress-g1', index: 0, screen: 'home' };
+let restoringBlockedPop = false;
+let blockedPopTarget: AppRoute | null = null;
 
 function applyPreferences(next: Preferences): void {
   document.documentElement.dataset.theme = next.theme;
@@ -107,14 +134,6 @@ function courseById(courseId: string): Course | undefined {
   return state.courses.find((course) => course.courseId === courseId);
 }
 
-function currentTimetableClasses(): Course[] {
-  if (!state.timetable) return [];
-  const ids = new Set(state.timetable.entries.map((entry) => entry.courseId));
-  return state.courses
-    .filter((course) => ids.has(course.courseId))
-    .sort((a, b) => a.className.localeCompare(b.className, 'zh-Hant'));
-}
-
 function formatClock(date: Date): string {
   return new Intl.DateTimeFormat('zh-TW', {
     timeZone: 'Asia/Taipei',
@@ -136,16 +155,6 @@ function formatRelativeTimestamp(iso: string, now: Date): string {
   if (dayDifference === 0) return `今天 ${clock}`;
   if (dayDifference === 1) return `昨天 ${clock}`;
   return `${updatedParts.year}/${String(updatedParts.month).padStart(2, '0')}/${String(updatedParts.day).padStart(2, '0')} ${clock}`;
-}
-
-function formatClassDate(item: ScheduledClass): string {
-  const { year, month, day, weekday } = item.date;
-  return `${year}/${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')} ${weekdayNames[weekday]}`;
-}
-
-function isToday(item: ScheduledClass, now: Date): boolean {
-  const today = getTaipeiParts(now);
-  return item.date.year === today.year && item.date.month === today.month && item.date.day === today.day;
 }
 
 function button(id: string, label: string, kind = '', attributes = ''): string {
@@ -174,110 +183,107 @@ function renderToast(): string {
   `;
 }
 
-function renderProgressDetails(courseId: string, now: Date): string {
-  const progress = state.progressByCourse[courseId];
+const timelineLabels: Record<TimelineRole, string> = {
+  last: '上一堂',
+  current: '目前課程',
+  next: '下一堂',
+};
+
+function formatOccurrenceWeekday(item: ScheduledClass): string {
+  return `週${shortWeekdayNames[item.date.weekday]}`;
+}
+
+function formatOccurrenceDate(item: ScheduledClass): string {
+  return `${formatOccurrenceWeekday(item)} / ${item.date.year}/${String(item.date.month).padStart(2, '0')}/${String(item.date.day).padStart(2, '0')}`;
+}
+
+function timelineCta(role: TimelineRole, item: ScheduledClass): string {
+  if (role === 'next') return '';
+  const label = role === 'current' ? '更新進度' : '修正進度';
+  const kind = role === 'current' ? 'primary' : 'secondary';
+  return `<button
+    class="button ${kind} timeline-cta"
+    type="button"
+    data-course-id="${escapeHtml(item.entry.courseId)}"
+    data-time-label="${item.start}–${item.end}"
+  >${label}</button>`;
+}
+
+function renderTimelineCard(role: TimelineRole, item: ScheduledClass, now: Date): string {
+  const expanded = expandedTimelineRole === role;
+  const className = courseById(item.entry.courseId)?.className ?? '未知班級';
+  const progress = state.progressByCourse[item.entry.courseId];
+  const progressValue = progress?.progress || '尚未紀錄';
   return `
-    <section class="progress-summary" aria-label="上次進度">
-      <h3>上次進度</h3>
-      <p class="progress-value">${progress?.progress ? escapeHtml(progress.progress) : '尚未紀錄'}</p>
-      ${progress?.note ? `<h3>備註</h3><p class="progress-note">${escapeHtml(progress.note)}</p>` : ''}
-      ${progress?.updatedAt ? `<p class="last-updated">最後更新：${formatRelativeTimestamp(progress.updatedAt, now)}</p>` : ''}
-    </section>
+    <article class="timeline-card ${expanded ? 'is-expanded' : 'is-shrunk'}" data-timeline-role="${role}">
+      <button
+        class="timeline-card-toggle"
+        type="button"
+        data-expand-role="${role}"
+        aria-expanded="${expanded}"
+        aria-label="${timelineLabels[role]}：${escapeHtml(className)}${expanded ? '，已展開' : '，展開詳細資料'}"
+      >
+        <span class="timeline-shrink" aria-hidden="${expanded}">
+          <span class="timeline-context">${timelineLabels[role]}</span>
+          <strong class="timeline-shrink-class">${escapeHtml(className)}</strong>
+          <span class="timeline-shrink-time">${formatOccurrenceWeekday(item)} ${item.start}–${item.end}</span>
+          <span class="timeline-shrink-progress">${escapeHtml(progressValue)}</span>
+        </span>
+        <span class="timeline-expanded-head" aria-hidden="${!expanded}">
+          <span class="timeline-context">${timelineLabels[role]}</span>
+          <strong class="timeline-class-name">${escapeHtml(className)}</strong>
+          <span class="timeline-date">${formatOccurrenceDate(item)}</span>
+          <span class="timeline-time">${item.start}–${item.end}</span>
+        </span>
+      </button>
+      <div class="timeline-details" aria-hidden="${!expanded}" ${expanded ? '' : 'inert'}>
+        <div class="timeline-details-inner">
+          <section class="timeline-progress" aria-label="上次進度">
+            <h3>上次進度</h3>
+            <p class="timeline-progress-value">${escapeHtml(progressValue)}</p>
+          </section>
+          ${progress?.note ? `
+            <section class="timeline-note" aria-label="備註">
+              <h3>備註</h3>
+              <p>${escapeHtml(progress.note)}</p>
+            </section>
+          ` : ''}
+          ${progress?.updatedAt ? `<p class="timeline-updated">最後更新：${formatRelativeTimestamp(progress.updatedAt, now)}</p>` : ''}
+          ${timelineCta(role, item)}
+        </div>
+      </div>
+    </article>
   `;
 }
 
-function renderNextCard(item: ScheduledClass | null, now: Date): string {
-  if (!item) {
+function availableTimelineRoles(timeline: TimelineScheduleState): TimelineRole[] {
+  return orderedTimelineRoles(timeline);
+}
+
+function syncTimelineSelection(timeline: TimelineScheduleState): void {
+  const available = availableTimelineRoles(timeline);
+  expandedTimelineRole = resolveTimelineSelection({
+    previousRole: expandedTimelineRole,
+    previousSignature: timelineContextSignature,
+    nextSignature: timeline.signature,
+    availableRoles: available,
+    defaultRole: timeline.defaultRole,
+  });
+  timelineContextSignature = timeline.signature;
+}
+
+function renderTimeline(timeline: TimelineScheduleState, now: Date): string {
+  const cards = orderedTimelineRoles(timeline)
+    .flatMap((role) => timeline[role] ? [renderTimelineCard(role, timeline[role], now)] : []);
+  if (cards.length === 0) {
     return `
       <section class="panel schedule-card">
-        <p class="eyebrow">下一堂</p>
-        <h2 class="empty-schedule">未來七天沒有課程</h2>
+        <p class="eyebrow">課程</p>
+        <h2 class="empty-schedule">沒有可顯示的課程</h2>
       </section>
     `;
   }
-  const course = courseById(item.entry.courseId);
-  return `
-    <section class="panel schedule-card" data-view="next">
-      <p class="eyebrow">下一堂</p>
-      <h2 class="class-name">${escapeHtml(course?.className ?? '未知班級')}</h2>
-      <p class="period-time">${item.start}–${item.end}</p>
-      ${isToday(item, now) ? '' : `<p class="class-date">${formatClassDate(item)}</p>`}
-      ${renderProgressDetails(item.entry.courseId, now)}
-    </section>
-  `;
-}
-
-function renderUpdateCard(
-  item: ScheduledClass,
-  kind: 'current' | 'previous' | 'last',
-  now: Date,
-): string {
-  const course = courseById(item.entry.courseId);
-  const heading = kind === 'current' ? '目前課程' : kind === 'last' ? '今天最後一堂' : '上一堂課';
-  const action = kind === 'current' ? '更新目前進度' : kind === 'last' ? '更新今天最後一堂進度' : '更新上一堂進度';
-  return `
-    <section class="panel schedule-card" data-view="${kind}">
-      <p class="eyebrow">${heading}</p>
-      <h2 class="class-name">${escapeHtml(course?.className ?? '未知班級')}</h2>
-      <p class="period-time">${item.start}–${item.end}</p>
-      ${renderProgressDetails(item.entry.courseId, now)}
-      ${button('update-target-progress', action, 'primary')}
-    </section>
-  `;
-}
-
-function tabButton(tab: HomeTab, label: string): string {
-  const active = activeHomeTab === tab;
-  return `<button class="tab-button ${active ? 'active' : ''}" type="button" role="tab" data-tab="${tab}" aria-selected="${active}">${label}</button>`;
-}
-
-function scheduleSignature(schedule: HomeScheduleState): string {
-  return [
-    schedule.mode,
-    schedule.current?.startAt.toISOString() ?? '',
-    schedule.previousToday?.startAt.toISOString() ?? '',
-    schedule.next?.startAt.toISOString() ?? '',
-  ].join('|');
-}
-
-function syncDefaultTab(schedule: HomeScheduleState): void {
-  const signature = scheduleSignature(schedule);
-  if (signature !== homeStateSignature) {
-    activeHomeTab = schedule.defaultTab;
-    homeStateSignature = signature;
-  }
-}
-
-function renderScheduleContent(schedule: HomeScheduleState, now: Date): string {
-  if (schedule.mode === 'current' && schedule.current) {
-    return renderUpdateCard(schedule.current, 'current', now);
-  }
-  if (schedule.mode === 'gap' && schedule.previousToday) {
-    const className = courseById(schedule.previousToday.entry.courseId)?.className ?? '未知班級';
-    return `
-      <div class="tabs" role="tablist" aria-label="課間操作">
-        ${tabButton('next', '下一堂')}
-        ${tabButton('previous', `更新上一堂（${escapeHtml(className)}）`)}
-      </div>
-      ${activeHomeTab === 'previous'
-        ? renderUpdateCard(schedule.previousToday, 'previous', now)
-        : renderNextCard(schedule.next, now)}
-    `;
-  }
-  if (schedule.mode === 'after-school' && schedule.previousToday) {
-    const className = courseById(schedule.previousToday.entry.courseId)?.className ?? '未知班級';
-    return `
-      <section class="status-summary"><h2>今日課程已結束</h2></section>
-      <div class="tabs" role="tablist" aria-label="放學後操作">
-        ${tabButton('previous', `更新今天最後一堂（${escapeHtml(className)}）`)}
-        ${tabButton('next', '下一堂')}
-      </div>
-      ${activeHomeTab === 'next'
-        ? renderNextCard(schedule.next, now)
-        : renderUpdateCard(schedule.previousToday, 'last', now)}
-    `;
-  }
-  return renderNextCard(schedule.next, now);
+  return `<section class="timeline" aria-label="課程時間軸">${cards.join('')}</section>`;
 }
 
 function renderDebugControls(): string {
@@ -304,56 +310,76 @@ function renderDebugControls(): string {
 
 function renderHome(): void {
   if (!state.timetable) {
-    const hasProgress = Object.keys(state.progressByCourse).length > 0;
+    timelineContextSignature = '';
+    expandedTimelineRole = null;
     root.innerHTML = page('今天上到哪', `
       ${renderToast()}
       <section class="panel empty-state">
         <p>尚未建立課表。</p>
-        ${button('create-timetable', '建立課表', 'primary')}
+        ${button('create-timetable', '設定課表', 'primary')}
       </section>
-      ${hasProgress ? `
-        <section class="panel data-panel">
-          <h2>保留的進度資料</h2>
-          <p>刪除課表不會刪除進度。重新建立相同班級後會再次連結。</p>
-          ${button('clear-progress', '清除所有進度資料', 'danger')}
-        </section>
-      ` : ''}
       ${renderDebugControls()}
     `, true);
-    bindHomeEvents(null);
+    bindHomeEvents();
     return;
   }
 
   const now = effectiveNow();
-  const schedule = getHomeScheduleState(state.timetable, now);
-  syncDefaultTab(schedule);
-  const classes = currentTimetableClasses();
-
+  const timeline = getTimelineScheduleState(state.timetable, now);
+  syncTimelineSelection(timeline);
   root.innerHTML = page('今天上到哪', `
     ${renderToast()}
-    ${renderScheduleContent(schedule, now)}
-    <section class="panel alternate-panel">
-      <h2>延後補登</h2>
-      ${button('choose-class', '選擇其他班級更新', 'secondary', classes.length ? '' : 'disabled')}
-    </section>
-    <section class="panel actions-panel" aria-label="課表操作">
-      <div class="button-stack">
-        ${button('edit-timetable', '編輯課表', 'secondary')}
-        ${button('rebuild-timetable', '重新建立課表', 'secondary')}
-        ${button('delete-timetable', '刪除課表', 'danger')}
-      </div>
-    </section>
-    <section class="panel data-panel">
-      <h2>進度資料</h2>
-      <p>只清除進度、備註與更新時間，不會刪除課表。</p>
-      ${button('clear-progress', '清除所有進度資料', 'danger')}
-    </section>
+    ${renderTimeline(timeline, now)}
     ${renderDebugControls()}
   `, true);
-  bindHomeEvents(schedule);
+  bindHomeEvents();
 }
 
-function beginTimetable(intent: TimetableIntent): void {
+function autoCenterTimelineCard(card: HTMLElement): void {
+  let finished = false;
+  let fallbackId = 0;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    globalThis.clearTimeout(fallbackId);
+    card.removeEventListener('transitionend', onTransitionEnd);
+    globalThis.requestAnimationFrame(() => {
+      const rect = card.getBoundingClientRect();
+      if (!shouldCenterTimelineCard(rect.top, rect.bottom, globalThis.innerHeight)) return;
+      card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    });
+  };
+  const onTransitionEnd = (event: TransitionEvent): void => {
+    if (event.target === card && event.propertyName === 'padding-top') finish();
+  };
+  card.addEventListener('transitionend', onTransitionEnd);
+  fallbackId = globalThis.setTimeout(finish, 360);
+}
+
+function expandTimelineCard(role: TimelineRole, userInitiated: boolean): void {
+  if (expandedTimelineRole === role) return;
+  const selectedCard = document.querySelector<HTMLElement>(`[data-timeline-role="${role}"]`);
+  if (!selectedCard) return;
+  expandedTimelineRole = role;
+  document.querySelectorAll<HTMLElement>('.timeline-card').forEach((card) => {
+    const expanded = card.dataset.timelineRole === role;
+    card.classList.toggle('is-expanded', expanded);
+    card.classList.toggle('is-shrunk', !expanded);
+    const toggle = card.querySelector('.timeline-card-toggle');
+    toggle?.setAttribute('aria-expanded', String(expanded));
+    const cardRole = card.dataset.timelineRole as TimelineRole;
+    const cardClass = card.querySelector('.timeline-shrink-class')?.textContent?.trim() ?? '未知班級';
+    toggle?.setAttribute('aria-label', `${timelineLabels[cardRole]}：${cardClass}${expanded ? '，已展開' : '，展開詳細資料'}`);
+    card.querySelector('.timeline-shrink')?.setAttribute('aria-hidden', String(expanded));
+    card.querySelector('.timeline-expanded-head')?.setAttribute('aria-hidden', String(!expanded));
+    const details = card.querySelector<HTMLElement>('.timeline-details');
+    details?.setAttribute('aria-hidden', String(!expanded));
+    details?.toggleAttribute('inert', !expanded);
+  });
+  if (userInitiated) autoCenterTimelineCard(selectedCard);
+}
+
+function initializeTimetableDraft(intent: TimetableIntent): void {
   timetableIntent = intent;
   draftGrid = new Map();
   selectedGridCell = null;
@@ -363,14 +389,121 @@ function beginTimetable(intent: TimetableIntent): void {
       if (className) draftGrid.set(gridKey(entry.weekday, entry.period), className);
     }
   }
-  screen = 'timetable';
+  timetableOriginalSnapshot = timetableDraftSnapshot(draftGrid);
+}
+
+function initializeProgressDraft(target: ProgressTarget): void {
+  progressTarget = target;
+  const previous = state.progressByCourse[target.courseId];
+  progressOriginalSnapshot = normalizeProgressDraft(previous?.progress ?? '', previous?.note ?? '');
+}
+
+function clearEditSnapshots(): void {
+  timetableOriginalSnapshot = null;
+  progressOriginalSnapshot = null;
+}
+
+function readTimetableDraft(): Map<string, string> {
+  const values = new Map<string, string>();
+  document.querySelectorAll<HTMLInputElement>('.class-input').forEach((input) => {
+    const key = input.dataset.gridKey;
+    if (key) values.set(key, input.value);
+  });
+  return values;
+}
+
+function readProgressDraft(): ProgressDraft | null {
+  const progress = document.querySelector<HTMLInputElement>('input[name="progress"]');
+  const note = document.querySelector<HTMLTextAreaElement>('textarea[name="note"]');
+  if (!progress || !note) return null;
+  return normalizeProgressDraft(progress.value, note.value);
+}
+
+function hasDirtyEdit(): boolean {
+  if (screen === 'timetable' && timetableOriginalSnapshot !== null) {
+    return timetableDraftSnapshot(readTimetableDraft()) !== timetableOriginalSnapshot;
+  }
+  if (screen === 'progress' && progressOriginalSnapshot) {
+    const current = readProgressDraft();
+    return current ? progressDraftChanged(progressOriginalSnapshot, current) : false;
+  }
+  return false;
+}
+
+function closeDiscardDialog(): void {
+  discardDialog?.remove();
+  discardDialog = null;
+}
+
+function showDiscardDialog(onDiscard: () => void): void {
+  if (discardDialog) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'dialog-backdrop';
+  overlay.innerHTML = `
+    <section class="discard-dialog" role="dialog" aria-modal="true" aria-labelledby="discard-title">
+      <h2 id="discard-title">尚未儲存變更</h2>
+      <p>要放棄目前修改，還是繼續編輯？</p>
+      <div class="button-stack">
+        ${button('discard-changes', '放棄變更', 'danger')}
+        ${button('continue-editing', '繼續編輯', 'primary')}
+      </div>
+    </section>
+  `;
+  document.body.append(overlay);
+  discardDialog = overlay;
+  overlay.querySelector('#continue-editing')?.addEventListener('click', () => {
+    closeDiscardDialog();
+  });
+  overlay.querySelector('#discard-changes')?.addEventListener('click', () => {
+    clearEditSnapshots();
+    closeDiscardDialog();
+    onDiscard();
+  });
+  overlay.querySelector<HTMLButtonElement>('#continue-editing')?.focus();
+}
+
+function requestBack(): void {
+  if (hasDirtyEdit()) {
+    showDiscardDialog(() => history.back());
+    return;
+  }
+  history.back();
+}
+
+function isAppRoute(value: unknown): value is AppRoute {
+  if (!value || typeof value !== 'object') return false;
+  const route = value as Partial<AppRoute>;
+  return route.app === 'today-progress-g1'
+    && typeof route.index === 'number'
+    && (route.screen === 'home' || route.screen === 'settings' || route.screen === 'timetable' || route.screen === 'progress');
+}
+
+function applyRoute(route: AppRoute): void {
+  currentRoute = route;
+  screen = route.screen;
+  closeDiscardDialog();
+  if (route.screen === 'timetable') initializeTimetableDraft(route.intent);
+  else if (route.screen === 'progress') initializeProgressDraft({ courseId: route.courseId, timeLabel: route.timeLabel });
+  else clearEditSnapshots();
   render();
 }
 
-function openProgress(item: ScheduledClass, returnTab: HomeTab): void {
-  progressTarget = { courseId: item.entry.courseId, scheduledClass: item, returnTab };
-  screen = 'progress';
-  render();
+function navigate(payload: RoutePayload): void {
+  const route = {
+    ...payload,
+    app: 'today-progress-g1' as const,
+    index: currentRoute.index + 1,
+  } as AppRoute;
+  history.pushState(route, '');
+  applyRoute(route);
+}
+
+function openProgress(courseId: string, timeLabel: string): void {
+  navigate({
+    screen: 'progress',
+    courseId,
+    timeLabel,
+  });
 }
 
 function invalidateUndo(): void {
@@ -421,71 +554,53 @@ function performUndo(): void {
 
 function bindDebugEvents(): void {
   document.querySelector('#apply-debug-time')?.addEventListener('click', () => {
-    const date = (document.querySelector('#debug-date') as HTMLInputElement).value;
-    const time = (document.querySelector('#debug-time') as HTMLInputElement).value;
+    const date = document.querySelector<HTMLInputElement>('#debug-date')?.value ?? '';
+    const time = document.querySelector<HTMLInputElement>('#debug-time')?.value ?? '';
     try {
       debugNow = createDebugInstant(date, time);
-      homeStateSignature = '';
-      render();
+      renderHome();
     } catch (error) {
       globalThis.alert(error instanceof Error ? error.message : '無法套用測試時間');
     }
   });
   document.querySelector('#reset-debug-time')?.addEventListener('click', () => {
     debugNow = null;
-    homeStateSignature = '';
-    render();
+    renderHome();
   });
 }
 
-function bindHomeEvents(schedule: HomeScheduleState | null): void {
-  document.querySelector('#open-settings')?.addEventListener('click', () => {
-    screen = 'settings';
-    render();
-  });
+function bindHomeEvents(): void {
+  document.querySelector('#open-settings')?.addEventListener('click', () => navigate({ screen: 'settings' }));
   document.querySelector('#undo-progress')?.addEventListener('click', performUndo);
-  document.querySelector('#create-timetable')?.addEventListener('click', () => beginTimetable('create'));
-  document.querySelector('#edit-timetable')?.addEventListener('click', () => beginTimetable('edit'));
-  document.querySelector('#rebuild-timetable')?.addEventListener('click', () => {
-    if (!globalThis.confirm('重新建立會從空白課表開始，但既有進度會保留。要繼續嗎？')) return;
-    beginTimetable('rebuild');
+  document.querySelector('#create-timetable')?.addEventListener('click', () => {
+    navigate({ screen: 'timetable', intent: 'create' });
   });
-  document.querySelectorAll<HTMLButtonElement>('.tab-button').forEach((tab) => {
-    tab.addEventListener('click', () => {
-      activeHomeTab = tab.dataset.tab as HomeTab;
-      render();
+  document.querySelectorAll<HTMLButtonElement>('.timeline-card-toggle').forEach((choice) => {
+    choice.addEventListener('click', () => {
+      const role = choice.dataset.expandRole as TimelineRole | undefined;
+      if (role) expandTimelineCard(role, true);
     });
   });
-  document.querySelector('#update-target-progress')?.addEventListener('click', () => {
-    if (!schedule) return;
-    if (schedule.mode === 'current' && schedule.current) openProgress(schedule.current, 'current');
-    else if (schedule.previousToday) openProgress(schedule.previousToday, 'previous');
-  });
-  document.querySelector('#choose-class')?.addEventListener('click', () => {
-    screen = 'class-picker';
-    render();
-  });
-  document.querySelector('#delete-timetable')?.addEventListener('click', () => {
-    if (!globalThis.confirm('確定刪除課表？所有班級的既有進度會保留。')) return;
-    state = deleteTimetable(state);
-    persistState(state);
-    homeStateSignature = '';
-    render();
-  });
-  document.querySelector('#clear-progress')?.addEventListener('click', () => {
-    if (!globalThis.confirm('這只會清除所有班級的進度、備註與更新時間。課表會保留。要繼續嗎？')) return;
-    if (!globalThis.confirm('再次確認：所有進度資料清除後無法復原。')) return;
-    state = clearAllProgress(state);
-    persistState(state);
-    invalidateUndo();
-    toast = null;
-    render();
+  document.querySelectorAll<HTMLButtonElement>('.timeline-cta').forEach((choice) => {
+    choice.addEventListener('click', () => {
+      const courseId = choice.dataset.courseId;
+      const timeLabel = choice.dataset.timeLabel;
+      if (!courseId || !timeLabel) return;
+      openProgress(courseId, timeLabel);
+    });
   });
   bindDebugEvents();
 }
 
+function showFormError(message: string): void {
+  const status = document.querySelector<HTMLParagraphElement>('#form-error');
+  if (!status) return;
+  status.textContent = message;
+  status.hidden = false;
+}
+
 function renderTimetable(): void {
-  const title = timetableIntent === 'edit' ? '編輯課表' : '建立課表';
+  const title = timetableIntent === 'edit' ? '課表設定' : '設定課表';
   const rows = PERIODS.map((period) => {
     const cells = [1, 2, 3, 4, 5].map((weekday) => {
       const key = gridKey(weekday, period.period);
@@ -515,7 +630,6 @@ function renderTimetable(): void {
 
   root.innerHTML = page(title, `
     <p>直接輸入每一格的班級。空格代表空堂，星期、節次與和平高中時間固定。</p>
-    ${timetableIntent === 'rebuild' ? '<p class="status warning">目前從空白課表重新建立；既有班級進度不會被刪除。</p>' : ''}
     <div class="timetable-scroll" tabindex="0" aria-label="星期一至星期五、第一至第八節課表">
       <table class="timetable edit-grid">
         <thead>
@@ -525,6 +639,7 @@ function renderTimetable(): void {
       </table>
     </div>
     <p id="selected-cell-status" class="small-text" role="status">尚未選擇格子。</p>
+    <p id="form-error" class="status error" role="alert" hidden></p>
     <div class="button-stack">
       ${button('clear-cell', '清空選取格子', 'danger', 'disabled')}
       ${button('save-timetable', '儲存課表', 'primary')}
@@ -554,62 +669,34 @@ function renderTimetable(): void {
     input.focus();
   });
   document.querySelector('#save-timetable')?.addEventListener('click', () => {
+    const currentDraft = readTimetableDraft();
     const entries: DraftEntry[] = [];
-    document.querySelectorAll<HTMLInputElement>('.class-input').forEach((input) => {
-      const className = normalizeClassName(input.value);
-      if (!className) return;
-      entries.push({
-        weekday: Number(input.dataset.weekday),
-        period: Number(input.dataset.period),
-        className,
-      });
-    });
+    for (const [key, value] of currentDraft) {
+      const className = normalizeClassName(value);
+      if (!className) continue;
+      const [weekday, period] = key.split(':').map(Number);
+      entries.push({ weekday, period, className });
+    }
     if (entries.length === 0 && !globalThis.confirm('目前 40 格都是空堂，仍要儲存空白課表嗎？')) return;
-    state = replaceTimetable(state, entries, effectiveNow());
-    persistState(state);
-    homeStateSignature = '';
-    screen = 'home';
-    render();
+    const updated = replaceTimetable(state, entries, effectiveNow());
+    try {
+      persistState(updated);
+      state = updated;
+      timetableOriginalSnapshot = timetableDraftSnapshot(currentDraft);
+      clearEditSnapshots();
+      timelineContextSignature = '';
+      requestBack();
+    } catch {
+      showFormError('課表儲存失敗，變更尚未離開此畫面。');
+    }
   });
-  document.querySelector('#timetable-back')?.addEventListener('click', () => {
-    screen = 'home';
-    render();
-  });
-}
-
-function renderClassPicker(): void {
-  const courses = currentTimetableClasses();
-  root.innerHTML = page('選擇其他班級更新', `
-    <section class="panel">
-      <p>選擇目前課表內的班級，進行延後補登。</p>
-      <div class="class-list">
-        ${courses.map((course) => `<button class="button secondary class-choice" type="button" data-course-id="${course.courseId}">${escapeHtml(course.className)}</button>`).join('') || '<p>目前課表沒有班級。</p>'}
-      </div>
-      ${button('picker-back', '返回', 'quiet')}
-    </section>
-  `);
-  document.querySelectorAll<HTMLButtonElement>('.class-choice').forEach((choice) => {
-    choice.addEventListener('click', () => {
-      progressTarget = {
-        courseId: choice.dataset.courseId ?? '',
-        scheduledClass: null,
-        returnTab: activeHomeTab,
-      };
-      screen = 'progress';
-      render();
-    });
-  });
-  document.querySelector('#picker-back')?.addEventListener('click', () => {
-    screen = 'home';
-    render();
-  });
+  document.querySelector('#timetable-back')?.addEventListener('click', requestBack);
 }
 
 function renderProgress(): void {
   const course = progressTarget ? courseById(progressTarget.courseId) : undefined;
   if (!course || !progressTarget) {
-    screen = 'home';
-    render();
+    requestBack();
     return;
   }
   const previous = state.progressByCourse[course.courseId];
@@ -617,13 +704,12 @@ function renderProgress(): void {
     <section class="panel course-summary">
       <p class="eyebrow">確認更新班級</p>
       <h2 class="class-name">${escapeHtml(course.className)}</h2>
-      <p class="period-time">${progressTarget.scheduledClass
-        ? `${progressTarget.scheduledClass.start}–${progressTarget.scheduledClass.end}`
-        : '延後補登'}</p>
+      <p class="period-time">${escapeHtml(progressTarget.timeLabel)}</p>
     </section>
     <form id="progress-form" class="panel form-panel">
       <label>進度<input name="progress" maxlength="120" value="${escapeHtml(previous?.progress ?? '')}" autocomplete="off" placeholder="例如：P.56" /></label>
       <label>備註（選填）<textarea name="note" maxlength="300" rows="4">${escapeHtml(previous?.note ?? '')}</textarea></label>
+      <p id="form-error" class="status error" role="alert" hidden></p>
       <div class="button-stack">
         <button class="button primary" type="submit">儲存</button>
         ${button('progress-cancel', '取消', 'quiet')}
@@ -632,34 +718,32 @@ function renderProgress(): void {
   `);
   document.querySelector('#progress-form')?.addEventListener('submit', (event) => {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const currentDraft = readProgressDraft();
+    if (!currentDraft) return;
     const previousProgress = previous ? { ...previous } : undefined;
     const updated = updateProgress(
       state,
       course.courseId,
-      String(formData.get('progress') ?? ''),
-      String(formData.get('note') ?? ''),
+      currentDraft.progress,
+      currentDraft.note,
       effectiveNow(),
     );
     try {
       persistState(updated);
       state = updated;
+      progressOriginalSnapshot = currentDraft;
+      clearEditSnapshots();
       armUndo(course.courseId, previousProgress);
+      requestBack();
     } catch {
-      toast = { kind: 'error', message: '儲存失敗，進度未變更。', showUndo: false };
+      showFormError('儲存失敗，進度未變更。');
     }
-    activeHomeTab = progressTarget?.returnTab ?? 'next';
-    screen = 'home';
-    render();
   });
-  document.querySelector('#progress-cancel')?.addEventListener('click', () => {
-    activeHomeTab = progressTarget?.returnTab ?? 'next';
-    screen = 'home';
-    render();
-  });
+  document.querySelector('#progress-cancel')?.addEventListener('click', requestBack);
 }
 
 function renderSettings(): void {
+  const hasProgress = Object.keys(state.progressByCourse).length > 0;
   root.innerHTML = page('設定', `
     <section class="panel settings-group" aria-labelledby="appearance-title">
       <h2 id="appearance-title">外觀</h2>
@@ -674,6 +758,17 @@ function renderSettings(): void {
         <button class="setting-option ${preferences.fontSize === 'small' ? 'active' : ''}" type="button" data-font-size="small" aria-pressed="${preferences.fontSize === 'small'}">小</button>
         <button class="setting-option ${preferences.fontSize === 'medium' ? 'active' : ''}" type="button" data-font-size="medium" aria-pressed="${preferences.fontSize === 'medium'}">中</button>
         <button class="setting-option ${preferences.fontSize === 'large' ? 'active' : ''}" type="button" data-font-size="large" aria-pressed="${preferences.fontSize === 'large'}">大</button>
+      </div>
+    </section>
+    <section class="panel settings-group" aria-labelledby="timetable-settings-title">
+      <h2 id="timetable-settings-title">課表</h2>
+      ${button('open-timetable-settings', '課表設定', 'secondary')}
+    </section>
+    <section class="panel danger-zone" aria-labelledby="danger-title">
+      <h2 id="danger-title">危險操作</h2>
+      <div class="button-stack">
+        ${button('delete-timetable', '刪除課表', 'danger', state.timetable ? '' : 'disabled')}
+        ${button('clear-progress', '清除所有進度', 'danger', hasProgress ? '' : 'disabled')}
       </div>
     </section>
     ${button('settings-back', '返回首頁', 'quiet')}
@@ -694,10 +789,28 @@ function renderSettings(): void {
       render();
     });
   });
-  document.querySelector('#settings-back')?.addEventListener('click', () => {
-    screen = 'home';
+  document.querySelector('#open-timetable-settings')?.addEventListener('click', () => {
+    navigate({ screen: 'timetable', intent: state.timetable ? 'edit' : 'create' });
+  });
+  document.querySelector('#delete-timetable')?.addEventListener('click', () => {
+    if (!globalThis.confirm('確定刪除課表？所有班級的既有進度會保留。')) return;
+    const updated = deleteTimetable(state);
+    persistState(updated);
+    state = updated;
+    timelineContextSignature = '';
     render();
   });
+  document.querySelector('#clear-progress')?.addEventListener('click', () => {
+    if (!globalThis.confirm('這只會清除所有班級的進度、備註與更新時間。課表會保留。要繼續嗎？')) return;
+    if (!globalThis.confirm('再次確認：所有進度資料清除後無法復原。')) return;
+    const updated = clearAllProgress(state);
+    persistState(updated);
+    state = updated;
+    invalidateUndo();
+    toast = null;
+    render();
+  });
+  document.querySelector('#settings-back')?.addEventListener('click', requestBack);
 }
 
 function render(): void {
@@ -705,13 +818,55 @@ function render(): void {
     case 'home': renderHome(); break;
     case 'timetable': renderTimetable(); break;
     case 'progress': renderProgress(); break;
-    case 'class-picker': renderClassPicker(); break;
     case 'settings': renderSettings(); break;
   }
 }
 
-globalThis.setInterval(() => {
-  if (screen === 'home' && !debugNow) render();
-}, 30_000);
+function refreshHomeIfScheduleChanged(): void {
+  if (screen !== 'home' || !state.timetable || debugNow) return;
+  const nextSignature = getTimelineScheduleState(state.timetable, new Date()).signature;
+  if (nextSignature !== timelineContextSignature) renderHome();
+}
 
+globalThis.addEventListener('popstate', (event) => {
+  const target = isAppRoute(event.state) ? event.state : null;
+  if (!target) return;
+
+  if (restoringBlockedPop) {
+    restoringBlockedPop = false;
+    const pendingTarget = blockedPopTarget;
+    blockedPopTarget = null;
+    if (pendingTarget) {
+      showDiscardDialog(() => history.go(pendingTarget.index - currentRoute.index));
+    }
+    return;
+  }
+
+  if (hasDirtyEdit()) {
+    const restoreDelta = currentRoute.index - target.index;
+    if (restoreDelta !== 0) {
+      restoringBlockedPop = true;
+      blockedPopTarget = target;
+      history.go(restoreDelta);
+    }
+    return;
+  }
+
+  applyRoute(target);
+});
+
+globalThis.addEventListener('beforeunload', (event) => {
+  if (!hasDirtyEdit()) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshHomeIfScheduleChanged();
+});
+globalThis.addEventListener('pageshow', refreshHomeIfScheduleChanged);
+globalThis.addEventListener('focus', refreshHomeIfScheduleChanged);
+globalThis.setInterval(refreshHomeIfScheduleChanged, 30_000);
+
+history.replaceState(currentRoute, '');
 render();
