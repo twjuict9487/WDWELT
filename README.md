@@ -1,4 +1,4 @@
-# 今天上到哪 — Teacher G1
+# 今天上到哪 — Teacher G1 / Windows LAN Host G2
 
 給教師使用的 mobile-first 手動課表與進度工具。已設定使用者打開首頁後，會依實際時間順序看到上一堂、目前課程與下一堂的班級及進度。
 
@@ -129,6 +129,18 @@ deno run -A --node-modules-dir=auto npm:vite@7.3.6 --host 0.0.0.0
 每格只填班級；空格代表空堂。主要資料仍使用 `today-progress-g1:v2`。班級正規化、穩定 `courseId`、課表狀態判斷、自由文字進度及 storage v2 結構均未改動。
 
 本專案不處理科目、教室、學期、假日、臨時調課、通知、帳號、同步、匯出、匯入或統計。
+
+## G2 production LAN host
+
+正式部署使用 Vite production build 加同機 Node built-in HTTP host，固定監聽 TCP `8080`；不使用 Vite dev／preview、Docker、database、reverse proxy 或 cloud backend。
+
+```powershell
+npm.cmd run build
+.\wdwelt.ps1 package -PackagePath .\artifacts\wdwelt-package
+.\artifacts\wdwelt-package\tools\wdwelt.ps1 install -CanonicalHost 192.168.1.50 -DryRun
+```
+
+管理工具的相對路徑固定以 script 所在位置解析，設定檔內的相對路徑固定以設定檔所在目錄解析；因此不依賴 PowerShell 當下的 working directory，含空白的安裝路徑也可使用。第一次安裝請先閱讀 [INSTALLATION.md](INSTALLATION.md)。完整的單一 PC 架構、Start／Stop／Restart、Task Scheduler、health、network、logs、update／rollback、power audit、localStorage origin 與 07:00／school Wi-Fi 限制請見 [G2 Windows LAN Host 操作文件](docs/G2-Windows-LAN-Host.md)。
 
 ## 驗證
 

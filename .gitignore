@@ -1,5 +1,7 @@
 node_modules/
 dist/
+artifacts/
+g2/runtime/
 .deno-cache/
 deno.lock
 *.tsbuildinfo

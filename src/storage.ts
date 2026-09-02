@@ -22,39 +22,72 @@ export const EMPTY_STATE: AppState = {
   progressByCourse: {},
 };
 
-export function loadState(storage: StorageLike = localStorage): AppState {
-  storage.removeItem(LEGACY_STORAGE_KEY);
-  const raw = storage.getItem(STORAGE_KEY);
-  if (!raw) return structuredClone(EMPTY_STATE);
+export interface LoadStateResult {
+  state: AppState;
+  error: string | null;
+}
+
+export function loadStateResult(storage: StorageLike = localStorage): LoadStateResult {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(STORAGE_KEY);
+  } catch {
+    return { state: structuredClone(EMPTY_STATE), error: '無法讀取瀏覽器 localStorage；原資料未被修改。' };
+  }
+  if (!raw) {
+    try { storage.removeItem(LEGACY_STORAGE_KEY); } catch {
+      return { state: structuredClone(EMPTY_STATE), error: '無法存取瀏覽器 localStorage；請檢查瀏覽器儲存權限。' };
+    }
+    return { state: structuredClone(EMPTY_STATE), error: null };
+  }
 
   try {
     const parsed = JSON.parse(raw) as Partial<AppState>;
-    if (parsed.version !== 2) return structuredClone(EMPTY_STATE);
-    const courses = Array.isArray(parsed.courses)
-      ? parsed.courses.flatMap((course) => {
-          const record = course as unknown as {
-            courseId?: unknown;
-            className?: unknown;
-            destination?: unknown;
-          };
-          const className = typeof record.className === 'string'
-            ? record.className
-            : typeof record.destination === 'string'
-              ? record.destination
-              : '';
-          if (typeof record.courseId !== 'string' || !normalizeClassName(className)) return [];
-          return [{ courseId: record.courseId, className: normalizeClassName(className) }];
-        })
-      : [];
+    if (parsed.version !== 2 || !Array.isArray(parsed.courses)
+      || typeof parsed.progressByCourse !== 'object' || parsed.progressByCourse === null) {
+      throw new Error('invalid storage v2 shape');
+    }
+    const courses = parsed.courses.map((course) => {
+      const record = course as unknown as { courseId?: unknown; className?: unknown; destination?: unknown };
+      const className = typeof record.className === 'string' ? record.className : typeof record.destination === 'string' ? record.destination : '';
+      if (typeof record.courseId !== 'string' || !record.courseId || !normalizeClassName(className)) throw new Error('invalid course');
+      return { courseId: record.courseId, className: normalizeClassName(className) };
+    });
+    const courseIds = new Set(courses.map((course) => course.courseId));
+    if (courseIds.size !== courses.length) throw new Error('duplicate courseId');
+
+    let timetable = null;
+    if (parsed.timetable != null) {
+      const record = parsed.timetable as unknown as { timezone?: unknown; entries?: unknown; updatedAt?: unknown };
+      if (record.timezone !== TIMEZONE || !Array.isArray(record.entries) || typeof record.updatedAt !== 'string') throw new Error('invalid timetable');
+      const entries = record.entries.map((entry) => {
+        const value = entry as { weekday?: unknown; period?: unknown; courseId?: unknown };
+        if (!Number.isInteger(value.weekday) || Number(value.weekday) < 1 || Number(value.weekday) > 5
+          || !Number.isInteger(value.period) || Number(value.period) < 1 || Number(value.period) > 8
+          || typeof value.courseId !== 'string' || !courseIds.has(value.courseId)) throw new Error('invalid timetable entry');
+        return { weekday: Number(value.weekday), period: Number(value.period), courseId: value.courseId };
+      });
+      timetable = { timezone: TIMEZONE, entries, updatedAt: record.updatedAt };
+    }
+
+    const progressByCourse: Record<string, CourseProgress> = {};
+    for (const [courseId, progress] of Object.entries(parsed.progressByCourse)) {
+      const value = progress as unknown as { courseId?: unknown; progress?: unknown; note?: unknown; updatedAt?: unknown };
+      if (value.courseId !== courseId || typeof value.progress !== 'string' || typeof value.note !== 'string' || typeof value.updatedAt !== 'string') throw new Error('invalid progress');
+      progressByCourse[courseId] = { courseId, progress: value.progress, note: value.note, updatedAt: value.updatedAt };
+    }
+    try { storage.removeItem(LEGACY_STORAGE_KEY); } catch { /* v2 data remains readable */ }
     return {
-      version: 2,
-      timetable: parsed.timetable ?? null,
-      courses,
-      progressByCourse: parsed.progressByCourse ?? {},
+      state: { version: 2, timetable, courses, progressByCourse },
+      error: null,
     };
   } catch {
-    return structuredClone(EMPTY_STATE);
+    return { state: structuredClone(EMPTY_STATE), error: 'Storage v2 資料無法解析；原始資料已保留，且本頁不會以空資料覆蓋。' };
   }
+}
+
+export function loadState(storage: StorageLike = localStorage): AppState {
+  return loadStateResult(storage).state;
 }
 
 export function persistState(state: AppState, storage: StorageLike = localStorage): void {

@@ -1,0 +1,17 @@
+{
+  "port": 8080,
+  "bindAddress": "0.0.0.0",
+  "canonicalHost": "127.0.0.1",
+  "canonicalUrl": "http://127.0.0.1:8080",
+  "installPath": "..",
+  "currentPath": "../dist",
+  "logPath": "runtime/logs",
+  "runPath": "runtime/run",
+  "healthIntervalSeconds": 60,
+  "healthTimeoutSeconds": 5,
+  "healthFailureThreshold": 3,
+  "recoveryCooldownSeconds": 120,
+  "maintenanceLockMinutes": 15,
+  "logRetentionDays": 14,
+  "logMaxBytes": 5000000
+}

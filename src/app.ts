@@ -5,6 +5,7 @@ import {
   timetableDraftSnapshot,
   type ProgressDraft,
 } from './drafts';
+import { loadBuildMetadata, loadHostHealth, type BuildMetadata } from './build-metadata';
 import {
   loadPreferences,
   savePreferences,
@@ -24,7 +25,7 @@ import {
 import {
   clearAllProgress,
   deleteTimetable,
-  loadState,
+  loadStateResult,
   normalizeClassName,
   persistState,
   replaceTimetable,
@@ -82,8 +83,19 @@ const weekdayNames = ['', '星期一', '星期二', '星期三', '星期四', '�
 const shortWeekdayNames = ['', '一', '二', '三', '四', '五', '六', '日'];
 const debugEnabled = new URLSearchParams(globalThis.location.search).get('debug') === '1';
 
-let state: AppState = loadState();
-let preferences: Preferences = loadPreferences();
+const initialStorage = loadStateResult();
+let state: AppState = initialStorage.state;
+let storageError: string | null = initialStorage.error;
+let resourceError: string | null = null;
+let buildMetadata: BuildMetadata | null = null;
+let buildMetadataError = false;
+let hostStatus: '正常' | '無法確認' = '無法確認';
+let preferences: Preferences;
+try { preferences = loadPreferences(); }
+catch {
+  preferences = { theme: 'dark', fontSize: 'medium' };
+  storageError ??= '無法讀取瀏覽器 localStorage；原資料未被修改。';
+}
 let screen: Screen = 'home';
 let timetableIntent: TimetableIntent = 'create';
 let draftGrid = new Map<string, string>();
@@ -168,9 +180,26 @@ function page(title: string, content: string, showSettings = false): string {
         <h1>${title}</h1>
         ${showSettings ? '<button id="open-settings" class="header-action" type="button">設定</button>' : ''}
       </header>
+      ${renderSystemErrors()}
       ${content}
     </main>
   `;
+}
+
+function renderSystemErrors(): string {
+  return [
+    storageError ? `<p class="status error" role="alert">${escapeHtml(storageError)}</p>` : '',
+    resourceError ? `<p class="status error" role="alert">${escapeHtml(resourceError)}</p>` : '',
+  ].join('');
+}
+
+function persistAppState(next: AppState): void {
+  if (storageError) throw new Error(storageError);
+  try { persistState(next); }
+  catch {
+    storageError = 'localStorage 儲存失敗；變更尚未儲存。';
+    throw new Error(storageError);
+  }
 }
 
 function renderToast(): string {
@@ -541,7 +570,7 @@ function performUndo(): void {
   }
   try {
     const restored = restoreProgress(state, record.courseId, record.previous);
-    persistState(restored);
+    persistAppState(restored);
     state = restored;
     invalidateUndo();
     toast = { kind: 'success', message: '已復原最近一次進度儲存', showUndo: false };
@@ -680,7 +709,7 @@ function renderTimetable(): void {
     if (entries.length === 0 && !globalThis.confirm('目前 40 格都是空堂，仍要儲存空白課表嗎？')) return;
     const updated = replaceTimetable(state, entries, effectiveNow());
     try {
-      persistState(updated);
+      persistAppState(updated);
       state = updated;
       timetableOriginalSnapshot = timetableDraftSnapshot(currentDraft);
       clearEditSnapshots();
@@ -729,7 +758,7 @@ function renderProgress(): void {
       effectiveNow(),
     );
     try {
-      persistState(updated);
+      persistAppState(updated);
       state = updated;
       progressOriginalSnapshot = currentDraft;
       clearEditSnapshots();
@@ -771,20 +800,29 @@ function renderSettings(): void {
         ${button('clear-progress', '清除所有進度', 'danger', hasProgress ? '' : 'disabled')}
       </div>
     </section>
+    <section class="settings-build-info" aria-label="版本與 Host 資訊">
+      ${buildMetadataError ? '<p class="status error">版本資訊讀取失敗。</p>' : ''}
+      <p>${buildMetadata ? `${escapeHtml(buildMetadata.releaseLabel)} ${escapeHtml(buildMetadata.version)}` : '版本資訊無法確認'}</p>
+      <p>Build ${buildMetadata ? escapeHtml(buildMetadata.build) : '無法確認'}</p>
+      <p>目前 URL：${escapeHtml(globalThis.location.href)}</p>
+      <p>Host 狀態：${hostStatus}</p>
+    </section>
     ${button('settings-back', '返回首頁', 'quiet')}
   `);
   document.querySelectorAll<HTMLButtonElement>('.setting-option[data-theme]').forEach((choice) => {
     choice.addEventListener('click', () => {
-      preferences = { ...preferences, theme: choice.dataset.theme as Theme };
-      savePreferences(preferences);
+      const next = { ...preferences, theme: choice.dataset.theme as Theme };
+      try { savePreferences(next); } catch { storageError = 'localStorage 儲存失敗；外觀設定尚未儲存。'; render(); return; }
+      preferences = next;
       applyPreferences(preferences);
       render();
     });
   });
   document.querySelectorAll<HTMLButtonElement>('.setting-option[data-font-size]').forEach((choice) => {
     choice.addEventListener('click', () => {
-      preferences = { ...preferences, fontSize: choice.dataset.fontSize as FontSize };
-      savePreferences(preferences);
+      const next = { ...preferences, fontSize: choice.dataset.fontSize as FontSize };
+      try { savePreferences(next); } catch { storageError = 'localStorage 儲存失敗；文字大小尚未儲存。'; render(); return; }
+      preferences = next;
       applyPreferences(preferences);
       render();
     });
@@ -795,8 +833,7 @@ function renderSettings(): void {
   document.querySelector('#delete-timetable')?.addEventListener('click', () => {
     if (!globalThis.confirm('確定刪除課表？所有班級的既有進度會保留。')) return;
     const updated = deleteTimetable(state);
-    persistState(updated);
-    state = updated;
+    try { persistAppState(updated); state = updated; } catch { render(); return; }
     timelineContextSignature = '';
     render();
   });
@@ -804,8 +841,7 @@ function renderSettings(): void {
     if (!globalThis.confirm('這只會清除所有班級的進度、備註與更新時間。課表會保留。要繼續嗎？')) return;
     if (!globalThis.confirm('再次確認：所有進度資料清除後無法復原。')) return;
     const updated = clearAllProgress(state);
-    persistState(updated);
-    state = updated;
+    try { persistAppState(updated); state = updated; } catch { render(); return; }
     invalidateUndo();
     toast = null;
     render();
@@ -868,5 +904,18 @@ globalThis.addEventListener('pageshow', refreshHomeIfScheduleChanged);
 globalThis.addEventListener('focus', refreshHomeIfScheduleChanged);
 globalThis.setInterval(refreshHomeIfScheduleChanged, 30_000);
 
+globalThis.addEventListener('error', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLScriptElement || target instanceof HTMLLinkElement || target instanceof HTMLImageElement)) return;
+  resourceError = '必要網頁資源載入失敗；請執行 host status、health 並查看 logs。';
+  render();
+}, true);
+
 history.replaceState(currentRoute, '');
 render();
+Promise.allSettled([loadBuildMetadata(), loadHostHealth()]).then(([metadataResult, healthResult]) => {
+  if (metadataResult.status === 'fulfilled') buildMetadata = metadataResult.value;
+  else buildMetadataError = true;
+  if (healthResult.status === 'fulfilled') hostStatus = healthResult.value;
+  if (screen === 'settings') render();
+});
