@@ -1,5 +1,19 @@
 import './styles.css';
 import {
+  ApiError,
+  clearProgress,
+  currentUser as fetchCurrentUser,
+  loadAccountState,
+  login,
+  logout,
+  register,
+  removeProgress,
+  removeTimetable,
+  saveProgress,
+  saveTimetable,
+  type AuthUser,
+} from './api';
+import {
   normalizeProgressDraft,
   progressDraftChanged,
   timetableDraftSnapshot,
@@ -23,14 +37,8 @@ import {
   type TimelineScheduleState,
 } from './schedule';
 import {
-  clearAllProgress,
-  deleteTimetable,
-  loadStateResult,
+  EMPTY_STATE,
   normalizeClassName,
-  persistState,
-  replaceTimetable,
-  restoreProgress,
-  updateProgress,
 } from './storage';
 import {
   orderedTimelineRoles,
@@ -39,7 +47,7 @@ import {
 } from './timeline';
 import type { AppState, Course, CourseProgress, DraftEntry } from './types';
 
-type Screen = 'home' | 'timetable' | 'progress' | 'settings';
+type Screen = 'loading' | 'login' | 'register' | 'home' | 'timetable' | 'progress' | 'settings';
 type TimetableIntent = 'create' | 'edit';
 type ToastKind = 'success' | 'error';
 
@@ -63,7 +71,7 @@ interface UndoRecord {
   courseId: string;
   previous: CourseProgress | undefined;
   expiresAt: number;
-  timeoutId: number;
+  timeoutId: ReturnType<typeof globalThis.setTimeout>;
 }
 
 interface ToastState {
@@ -83,9 +91,9 @@ const weekdayNames = ['', '星期一', '星期二', '星期三', '星期四', '�
 const shortWeekdayNames = ['', '一', '二', '三', '四', '五', '六', '日'];
 const debugEnabled = new URLSearchParams(globalThis.location.search).get('debug') === '1';
 
-const initialStorage = loadStateResult();
-let state: AppState = initialStorage.state;
-let storageError: string | null = initialStorage.error;
+let state: AppState = structuredClone(EMPTY_STATE);
+let storageError: string | null = null;
+let dataError: string | null = null;
 let resourceError: string | null = null;
 let buildMetadata: BuildMetadata | null = null;
 let buildMetadataError = false;
@@ -96,7 +104,10 @@ catch {
   preferences = { theme: 'dark', fontSize: 'medium' };
   storageError ??= '無法讀取瀏覽器 localStorage；原資料未被修改。';
 }
-let screen: Screen = 'home';
+let screen: Screen = 'loading';
+let authenticatedUser: AuthUser | null = null;
+let loginUsername = '';
+let authNotice: string | null = null;
 let timetableIntent: TimetableIntent = 'create';
 let draftGrid = new Map<string, string>();
 let timetableOriginalSnapshot: string | null = null;
@@ -189,17 +200,133 @@ function page(title: string, content: string, showSettings = false): string {
 function renderSystemErrors(): string {
   return [
     storageError ? `<p class="status error" role="alert">${escapeHtml(storageError)}</p>` : '',
+    dataError ? `<p class="status error" role="alert">${escapeHtml(dataError)}</p>` : '',
     resourceError ? `<p class="status error" role="alert">${escapeHtml(resourceError)}</p>` : '',
   ].join('');
 }
 
-function persistAppState(next: AppState): void {
-  if (storageError) throw new Error(storageError);
-  try { persistState(next); }
-  catch {
-    storageError = 'localStorage 儲存失敗；變更尚未儲存。';
-    throw new Error(storageError);
+function authErrorMessage(error: unknown): string {
+  return error instanceof ApiError ? error.message : '伺服器處理失敗，請稍後再試。';
+}
+
+async function loadSignedInState(user: AuthUser): Promise<void> {
+  authenticatedUser = user;
+  screen = 'loading';
+  dataError = null;
+  render();
+  try {
+    state = await loadAccountState();
+    dataError = null;
+    screen = 'home';
+    currentRoute = { app: 'today-progress-g1', index: 0, screen: 'home' };
+    history.replaceState(currentRoute, '');
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      authenticatedUser = null;
+      state = structuredClone(EMPTY_STATE);
+      dataError = null;
+      screen = 'login';
+    } else dataError = authErrorMessage(error);
   }
+  render();
+}
+
+function renderLoading(): void {
+  root.innerHTML = page('今天上到哪', `
+    <section class="panel auth-panel">
+      <p>${authenticatedUser ? '正在載入中央課表與進度…' : '正在確認登入狀態…'}</p>
+      ${authenticatedUser ? button('retry-account-data', '重試', 'primary') : ''}
+      ${authenticatedUser ? button('loading-logout', '登出', 'quiet') : ''}
+    </section>
+  `);
+  document.querySelector('#retry-account-data')?.addEventListener('click', () => { if (authenticatedUser) void loadSignedInState(authenticatedUser); });
+  document.querySelector('#loading-logout')?.addEventListener('click', () => { void performLogout(); });
+}
+
+function renderLogin(): void {
+  root.innerHTML = page('登入', `
+    ${authNotice ? `<p class="status success" role="status">${escapeHtml(authNotice)}</p>` : ''}
+    <form id="login-form" class="panel form-panel auth-panel">
+      <label>帳號<input name="username" maxlength="50" autocomplete="username" value="${escapeHtml(loginUsername)}" required /></label>
+      <label>密碼<input name="password" type="password" maxlength="256" autocomplete="current-password" required /></label>
+      <p id="form-error" class="status error" role="alert" hidden></p>
+      <div class="button-stack">
+        <button class="button primary" type="submit">登入</button>
+        ${button('open-register', '建立帳號', 'secondary')}
+      </div>
+    </form>
+  `);
+  document.querySelector('#open-register')?.addEventListener('click', () => { authNotice = null; screen = 'register'; render(); });
+  document.querySelector<HTMLFormElement>('#login-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+    const username = form.elements.namedItem('username') as HTMLInputElement;
+    const password = form.elements.namedItem('password') as HTMLInputElement;
+    submit?.setAttribute('disabled', '');
+    authNotice = null;
+    try {
+      const user = await login(username.value, password.value);
+      loginUsername = '';
+      password.value = '';
+      await loadSignedInState(user);
+    } catch (error) {
+      showFormError(authErrorMessage(error));
+      submit?.removeAttribute('disabled');
+    }
+  });
+}
+
+function renderRegister(): void {
+  root.innerHTML = page('建立帳號', `
+    <form id="register-form" class="panel form-panel auth-panel">
+      <label>帳號<input name="username" maxlength="50" autocomplete="username" required /></label>
+      <label>密碼<input name="password" type="password" minlength="3" maxlength="256" autocomplete="new-password" required /></label>
+      <label>確認密碼<input name="confirm-password" type="password" minlength="3" maxlength="256" autocomplete="new-password" required /></label>
+      <p id="form-error" class="status error" role="alert" hidden></p>
+      <div class="button-stack">
+        <button class="button primary" type="submit">建立帳號</button>
+        ${button('register-back', '返回登入', 'quiet')}
+      </div>
+    </form>
+  `);
+  document.querySelector('#register-back')?.addEventListener('click', () => { screen = 'login'; render(); });
+  document.querySelector<HTMLFormElement>('#register-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+    const username = form.elements.namedItem('username') as HTMLInputElement;
+    const password = form.elements.namedItem('password') as HTMLInputElement;
+    const confirmation = form.elements.namedItem('confirm-password') as HTMLInputElement;
+    if (password.value !== confirmation.value) { showFormError('兩次輸入的密碼不一致。'); return; }
+    submit?.setAttribute('disabled', '');
+    try {
+      loginUsername = await register(username.value, password.value);
+      password.value = '';
+      confirmation.value = '';
+      authNotice = '帳號已建立，請登入。';
+      screen = 'login';
+      render();
+    } catch (error) {
+      showFormError(authErrorMessage(error));
+      submit?.removeAttribute('disabled');
+    }
+  });
+}
+
+async function performLogout(): Promise<void> {
+  try { await logout(); }
+  catch (error) { dataError = authErrorMessage(error); render(); return; }
+  authenticatedUser = null;
+  state = structuredClone(EMPTY_STATE);
+  invalidateUndo();
+  clearEditSnapshots();
+  dataError = null;
+  authNotice = null;
+  screen = 'login';
+  currentRoute = { app: 'today-progress-g1', index: 0, screen: 'home' };
+  history.replaceState(currentRoute, '');
+  render();
 }
 
 function renderToast(): string {
@@ -366,11 +493,11 @@ function renderHome(): void {
 
 function autoCenterTimelineCard(card: HTMLElement): void {
   let finished = false;
-  let fallbackId = 0;
+  let fallbackId: ReturnType<typeof globalThis.setTimeout> | undefined;
   const finish = (): void => {
     if (finished) return;
     finished = true;
-    globalThis.clearTimeout(fallbackId);
+    if (fallbackId !== undefined) globalThis.clearTimeout(fallbackId);
     card.removeEventListener('transitionend', onTransitionEnd);
     globalThis.requestAnimationFrame(() => {
       const rect = card.getBoundingClientRect();
@@ -560,7 +687,7 @@ function armUndo(courseId: string, previous: CourseProgress | undefined): void {
   toast = { kind: 'success', message: '已儲存', showUndo: true };
 }
 
-function performUndo(): void {
+async function performUndo(): Promise<void> {
   const record = undoRecord;
   if (!record || Date.now() >= record.expiresAt) {
     invalidateUndo();
@@ -568,10 +695,12 @@ function performUndo(): void {
     render();
     return;
   }
+  document.querySelector<HTMLButtonElement>('#undo-progress')?.setAttribute('disabled', '');
   try {
-    const restored = restoreProgress(state, record.courseId, record.previous);
-    persistAppState(restored);
-    state = restored;
+    const progressByCourse = { ...state.progressByCourse };
+    if (record.previous) progressByCourse[record.courseId] = await saveProgress(record.courseId, record.previous.progress, record.previous.note);
+    else { await removeProgress(record.courseId); delete progressByCourse[record.courseId]; }
+    state = { ...state, progressByCourse };
     invalidateUndo();
     toast = { kind: 'success', message: '已復原最近一次進度儲存', showUndo: false };
   } catch {
@@ -600,7 +729,7 @@ function bindDebugEvents(): void {
 
 function bindHomeEvents(): void {
   document.querySelector('#open-settings')?.addEventListener('click', () => navigate({ screen: 'settings' }));
-  document.querySelector('#undo-progress')?.addEventListener('click', performUndo);
+  document.querySelector('#undo-progress')?.addEventListener('click', () => { void performUndo(); });
   document.querySelector('#create-timetable')?.addEventListener('click', () => {
     navigate({ screen: 'timetable', intent: 'create' });
   });
@@ -697,7 +826,7 @@ function renderTimetable(): void {
     input.value = '';
     input.focus();
   });
-  document.querySelector('#save-timetable')?.addEventListener('click', () => {
+  document.querySelector('#save-timetable')?.addEventListener('click', async () => {
     const currentDraft = readTimetableDraft();
     const entries: DraftEntry[] = [];
     for (const [key, value] of currentDraft) {
@@ -707,16 +836,17 @@ function renderTimetable(): void {
       entries.push({ weekday, period, className });
     }
     if (entries.length === 0 && !globalThis.confirm('目前 40 格都是空堂，仍要儲存空白課表嗎？')) return;
-    const updated = replaceTimetable(state, entries, effectiveNow());
+    const save = document.querySelector<HTMLButtonElement>('#save-timetable');
+    if (save) save.disabled = true;
     try {
-      persistAppState(updated);
-      state = updated;
+      state = await saveTimetable(entries);
       timetableOriginalSnapshot = timetableDraftSnapshot(currentDraft);
       clearEditSnapshots();
       timelineContextSignature = '';
       requestBack();
-    } catch {
-      showFormError('課表儲存失敗，變更尚未離開此畫面。');
+    } catch (error) {
+      showFormError(`${authErrorMessage(error)}；課表變更尚未離開此畫面。`);
+      if (save) save.disabled = false;
     }
   });
   document.querySelector('#timetable-back')?.addEventListener('click', requestBack);
@@ -745,27 +875,23 @@ function renderProgress(): void {
       </div>
     </form>
   `);
-  document.querySelector('#progress-form')?.addEventListener('submit', (event) => {
+  document.querySelector<HTMLFormElement>('#progress-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const currentDraft = readProgressDraft();
     if (!currentDraft) return;
     const previousProgress = previous ? { ...previous } : undefined;
-    const updated = updateProgress(
-      state,
-      course.courseId,
-      currentDraft.progress,
-      currentDraft.note,
-      effectiveNow(),
-    );
+    const submit = (event.currentTarget as HTMLFormElement).querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (submit) submit.disabled = true;
     try {
-      persistAppState(updated);
-      state = updated;
+      const saved = await saveProgress(course.courseId, currentDraft.progress, currentDraft.note);
+      state = { ...state, progressByCourse: { ...state.progressByCourse, [course.courseId]: saved } };
       progressOriginalSnapshot = currentDraft;
       clearEditSnapshots();
       armUndo(course.courseId, previousProgress);
       requestBack();
-    } catch {
-      showFormError('儲存失敗，進度未變更。');
+    } catch (error) {
+      showFormError(`${authErrorMessage(error)}；進度未變更。`);
+      if (submit) submit.disabled = false;
     }
   });
   document.querySelector('#progress-cancel')?.addEventListener('click', requestBack);
@@ -792,6 +918,11 @@ function renderSettings(): void {
     <section class="panel settings-group" aria-labelledby="timetable-settings-title">
       <h2 id="timetable-settings-title">課表</h2>
       ${button('open-timetable-settings', '課表設定', 'secondary')}
+    </section>
+    <section class="panel settings-group" aria-labelledby="account-title">
+      <h2 id="account-title">帳號</h2>
+      <p>${authenticatedUser ? escapeHtml(authenticatedUser.username) : '無法確認'}</p>
+      ${button('logout', '登出', 'secondary')}
     </section>
     <section class="panel danger-zone" aria-labelledby="danger-title">
       <h2 id="danger-title">危險操作</h2>
@@ -830,31 +961,57 @@ function renderSettings(): void {
   document.querySelector('#open-timetable-settings')?.addEventListener('click', () => {
     navigate({ screen: 'timetable', intent: state.timetable ? 'edit' : 'create' });
   });
-  document.querySelector('#delete-timetable')?.addEventListener('click', () => {
+  document.querySelector('#delete-timetable')?.addEventListener('click', async () => {
     if (!globalThis.confirm('確定刪除課表？所有班級的既有進度會保留。')) return;
-    const updated = deleteTimetable(state);
-    try { persistAppState(updated); state = updated; } catch { render(); return; }
+    try { state = await removeTimetable(); }
+    catch (error) { dataError = `${authErrorMessage(error)}；課表未刪除。`; render(); return; }
     timelineContextSignature = '';
+    dataError = null;
     render();
   });
-  document.querySelector('#clear-progress')?.addEventListener('click', () => {
+  document.querySelector('#clear-progress')?.addEventListener('click', async () => {
     if (!globalThis.confirm('這只會清除所有班級的進度、備註與更新時間。課表會保留。要繼續嗎？')) return;
     if (!globalThis.confirm('再次確認：所有進度資料清除後無法復原。')) return;
-    const updated = clearAllProgress(state);
-    try { persistAppState(updated); state = updated; } catch { render(); return; }
+    try { await clearProgress(); state = { ...state, progressByCourse: {} }; }
+    catch (error) { dataError = `${authErrorMessage(error)}；進度未清除。`; render(); return; }
     invalidateUndo();
     toast = null;
+    dataError = null;
     render();
   });
+  document.querySelector('#logout')?.addEventListener('click', () => { void performLogout(); });
   document.querySelector('#settings-back')?.addEventListener('click', requestBack);
 }
 
 function render(): void {
   switch (screen) {
+    case 'loading': renderLoading(); break;
+    case 'login': renderLogin(); break;
+    case 'register': renderRegister(); break;
     case 'home': renderHome(); break;
     case 'timetable': renderTimetable(); break;
     case 'progress': renderProgress(); break;
     case 'settings': renderSettings(); break;
+  }
+}
+
+async function restoreSession(): Promise<void> {
+  screen = 'loading';
+  render();
+  try {
+    const user = await fetchCurrentUser();
+    await loadSignedInState(user);
+  } catch (error) {
+    authenticatedUser = null;
+    state = structuredClone(EMPTY_STATE);
+    if (error instanceof ApiError && error.status === 401) {
+      dataError = null;
+      screen = 'login';
+    } else {
+      dataError = authErrorMessage(error);
+      screen = 'loading';
+    }
+    render();
   }
 }
 
@@ -865,6 +1022,7 @@ function refreshHomeIfScheduleChanged(): void {
 }
 
 globalThis.addEventListener('popstate', (event) => {
+  if (!authenticatedUser) return;
   const target = isAppRoute(event.state) ? event.state : null;
   if (!target) return;
 
@@ -913,6 +1071,7 @@ globalThis.addEventListener('error', (event) => {
 
 history.replaceState(currentRoute, '');
 render();
+void restoreSession();
 Promise.allSettled([loadBuildMetadata(), loadHostHealth()]).then(([metadataResult, healthResult]) => {
   if (metadataResult.status === 'fulfilled') buildMetadata = metadataResult.value;
   else buildMetadataError = true;

@@ -1,13 +1,17 @@
 {
   "name": "today-progress-g1",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "node g2/scripts/build-production.mjs",
     "host": "node g2/host/server.mjs --config g2/config.development.json",
     "test:g2:lifecycle": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File g2/scripts/integration-g2.ps1",
+    "db:preflight": "node db/preflight.mjs",
+    "db:migrate": "node db/migrate.mjs",
+    "test:db": "node db/integration-test.mjs",
+    "test:restore": "node db/restore-integration-test.mjs",
     "soak:g2": "node g2/scripts/soak-test.mjs",
     "preview": "vite preview",
     "test": "vitest run",
@@ -17,5 +21,8 @@
     "typescript": "^5.9.2",
     "vite": "^7.1.1",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "mysql2": "^3.24.3"
   }
 }

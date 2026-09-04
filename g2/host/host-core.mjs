@@ -56,21 +56,40 @@ function serveFile(request, response, filePath) {
   else createReadStream(filePath).pipe(response);
 }
 
-export function createRequestHandler({ root, startedAt = Date.now(), onHealth }) {
-  return (request, response) => {
+export function createRequestHandler({ root, startedAt = Date.now(), onHealth, checkDatabase = async () => false, currentMigration = async () => 'unavailable', databaseStatus = () => ({ lastCheck: null }) }) {
+  return async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://localhost');
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         json(response, 405, { status: 'error', message: 'Method not allowed' }, request.method === 'HEAD');
         return;
       }
-      if (url.pathname === '/health') {
+      if (url.pathname === '/health/live') {
         const metadata = readRelease(root);
         onHealth?.();
         json(response, 200, {
           status: 'ok', version: metadata.version, build: metadata.build,
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000), timestamp: new Date().toISOString(),
           memoryRssBytes: process.memoryUsage().rss,
+        }, request.method === 'HEAD');
+        return;
+      }
+      if (url.pathname === '/health' || url.pathname === '/health/ready') {
+        const metadata = readRelease(root);
+        const databaseReady = await checkDatabase();
+        const status = databaseReady ? 'ok' : url.pathname === '/health' ? 'degraded' : 'unavailable';
+        onHealth?.();
+        json(response, databaseReady ? 200 : 503, {
+          status,
+          app: 'ok',
+          database: databaseReady ? 'ok' : 'unavailable',
+          version: metadata.version,
+          build: metadata.build,
+          uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+          timestamp: new Date().toISOString(),
+          memoryRssBytes: process.memoryUsage().rss,
+          migration: databaseReady ? await currentMigration() : 'unavailable',
+          databaseLastCheck: databaseStatus().lastCheck,
         }, request.method === 'HEAD');
         return;
       }

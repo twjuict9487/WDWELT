@@ -1,14 +1,20 @@
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequestHandler, readRelease } from './host-core.mjs';
 import { createLogger } from './logger.mjs';
+import { createApiHandler } from './api.mjs';
+import { DatabaseManager, UnavailableDatabaseManager } from './db.mjs';
+import { loadDatabaseConfig } from '../../db/config.mjs';
 
 const hostDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = dirname(dirname(hostDir));
+const requiredMigrationId = '001_initial.sql';
+const requiredMigrationSql = readFileSync(resolve(projectRoot, 'db', 'migrations', requiredMigrationId), 'utf8').replace(/^\uFEFF/, '');
+const requiredMigrationChecksum = createHash('sha256').update(requiredMigrationSql).digest('hex');
 const readJsonFile = (path) => JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
 const args = process.argv.slice(2);
 const valueAfter = (name, fallback) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; };
@@ -17,21 +23,47 @@ const configPath = isAbsolute(configArgument) ? configArgument : resolve(project
 const config = readJsonFile(configPath);
 const configDirectory = dirname(configPath);
 const configuredPath = (value) => isAbsolute(value) ? value : resolve(configDirectory, value);
+const installRoot = configuredPath(config.installPath);
+const assertWithinInstall = (path, name) => {
+  const relation = relative(installRoot, path);
+  if (relation === '..' || relation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(relation)) throw new Error(`${name} must remain inside installPath`);
+};
 const rootArgument = valueAfter('--root', null);
 const root = rootArgument
   ? isAbsolute(rootArgument) ? rootArgument : resolve(projectRoot, rootArgument)
   : configuredPath(config.currentPath);
+assertWithinInstall(root, 'currentPath');
 const port = Number(config.port);
 if (port !== 8080) throw new Error('Production port 必須固定為 8080');
 for (const key of ['logRetentionDays', 'logMaxBytes']) {
   if (!Number.isFinite(Number(config[key])) || Number(config[key]) <= 0) throw new Error(`${key} 必須大於 0`);
 }
 const runPath = configuredPath(config.runPath);
+assertWithinInstall(runPath, 'runPath');
+assertWithinInstall(configuredPath(config.logPath), 'logPath');
 mkdirSync(runPath, { recursive: true });
 const release = readRelease(root);
 const log = createLogger({ logPath: configuredPath(config.logPath), retentionDays: config.logRetentionDays, maxBytes: config.logMaxBytes, release });
 const startedAt = Date.now();
-const server = createServer(createRequestHandler({ root, startedAt }));
+let database;
+try {
+  if (!config.databaseConfigPath) throw new Error('databaseConfigPath missing');
+  database = new DatabaseManager(loadDatabaseConfig(configuredPath(config.databaseConfigPath)), log);
+} catch {
+  database = new UnavailableDatabaseManager({}, log);
+}
+database.start();
+const apiHandler = createApiHandler({ database, log });
+const currentMigration = () => database.currentMigration();
+const checkApplicationDatabase = async () => {
+  if (!await database.checkReady()) return false;
+  return database.hasMigration(requiredMigrationId, requiredMigrationChecksum);
+};
+const staticHandler = createRequestHandler({ root, startedAt, checkDatabase: checkApplicationDatabase, currentMigration, databaseStatus: () => database.status });
+const server = createServer(async (request, response) => {
+  if (await apiHandler(request, response)) return;
+  await staticHandler(request, response);
+});
 const pidPath = resolve(runPath, 'host.pid.json');
 const shutdownRequestPath = resolve(runPath, 'shutdown.request.json');
 const controlToken = randomUUID();
@@ -64,7 +96,8 @@ const shutdown = (signal) => {
   if (closing) return;
   closing = true;
   log('info', 'stop', `Graceful stop requested (${signal})`);
-  server.close(() => {
+  server.close(async () => {
+    try { await database.close(); } catch { /* process is stopping */ }
     try { unlinkSync(pidPath); } catch { /* stale PID is handled by manager */ }
     process.exit(0);
   });

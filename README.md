@@ -1,153 +1,1032 @@
-# 今天上到哪 — Teacher G1 / Windows LAN Host G2
+# 今天上到哪
 
-給教師使用的 mobile-first 手動課表與進度工具。已設定使用者打開首頁後，會依實際時間順序看到上一堂、目前課程與下一堂的班級及進度。
+## WDWELT G2 試行版 0.3.0
 
-主要驗證尺寸是 iPhone 12 Safari 的 390 × 844 CSS pixels。介面使用繁體中文，時間判斷固定為 `Asia/Taipei`。
+> **教師用課表與課程進度工具**
+> 以一台普通 Windows PC／Laptop 作為校內主機，教師使用手機透過校內網路查看課表、記錄進度與備註。
 
-## 首頁
-
-已有課表時，首頁最多依固定順序呈現：
-
-```text
-上一堂
-目前課程
-下一堂
-```
-
-不存在的 context 直接省略。上一堂與下一堂會依 occurrence 的實際時間搜尋，可跨空堂、午休、日期、週末及每週課表邊界；目前課程沿用 `start <= now < end`。
-
-上課中預設展開「目前課程」；非上課中預設展開「下一堂」，沒有下一堂時才展開上一堂。收合卡片顯示 context、班級、星期與時間，以及單行進度；展開卡片顯示完整進度、非空備註、最後更新與適用的操作：
+| 項目     | G2 試行版                                |
+| ------ | ------------------------------------- |
+| 主要使用者  | 教師                                    |
+| 主要裝置   | 手機瀏覽器                                 |
+| 主要測試尺寸 | iPhone 12 Safari，390 × 844 CSS pixels |
+| 使用範圍   | 校內區域網路                                |
+| 網頁服務   | TCP `8080`                            |
+| 正式資料   | MySQL `g2`                            |
+| 資料庫連線  | `127.0.0.1:3306`                      |
+| 時區     | `Asia/Taipei`                         |
 
 ```text
-目前課程：[更新進度]
-上一堂：[修正進度]
-下一堂：無 CTA
+教師手機
+    │
+    │ 校內網路 :8080
+    ▼
+WDWELT 主機
+    │
+    │ 127.0.0.1:3306
+    ▼
+MySQL 8.0
 ```
 
-點擊任一收合卡片會在原位置同步切換展開狀態，動畫為 `250ms ease-out`。動畫結束後，只有使用者主動展開且卡片未完整位於 viewport 時才會 smooth scroll 至接近中央。課表及資料管理操作仍集中在 Settings；首次使用者則保留最小的「設定課表」empty state。
+---
 
-## Settings
+# 目錄
 
-設定畫面包含：
+1. [教師操作手冊](#第一部分教師操作手冊)
+2. [系統管理與開發手冊](#第二部分系統管理與開發手冊)
+3. [開發歷程](#第三部分開發歷程)
 
-- 外觀：深色／淺色
-- 文字大小：小／中／大
-- 單一「課表設定」入口
-- 最底部的「刪除課表」與「清除所有進度」危險操作區
+---
 
-設定使用獨立 localStorage key：
+# 第一部分：教師操作手冊
+
+> **這一部分只說怎麼使用。**
+> 不需要知道伺服器、資料庫、API 或程式如何運作。
+
+---
+
+## 1. 開始使用
+
+### 使用前需要準備
+
+在開啟網站前，只需要確認三件事：
+
+* 手機已連上學校指定的 Wi-Fi。
+* 已取得「今天上到哪」網址。
+* 已取得自己的帳號與密碼。
+
+管理人員提供的網址通常會類似：
+
+`http://192.168.1.50:8080/`
+
+實際網址以學校提供的為準。
+
+> **注意**
+>
+> 「今天上到哪」只在指定的校內網路中提供服務。
+> 使用行動網路、家中 Wi-Fi 或其他外部網路時無法連線，屬於正常情況。
+
+---
+
+## 2. 登入
+
+開啟網站後：
+
+1. 輸入自己的帳號。
+2. 輸入密碼。
+3. 按下 **登入**。
+4. 登入成功後即進入自己的課表。
+
+每位教師擁有各自獨立的：
+
+* 課表
+* 班級
+* 課程
+* 進度
+* 備註
+* 最後更新時間
+
+不同帳號的資料不會混在一起。
+
+### 登入狀態會保留
+
+一般情況下，不需要每次開啟網站都重新登入。
+
+**登入 → 關閉網站 → 稍後重新開啟 → 繼續使用**
+
+只有登入狀態失效時，網站才會要求重新輸入帳號與密碼。
+
+### 何時應該登出
+
+如果使用的是自己的手機，可以正常保留登入狀態。
+
+如果使用下列裝置，使用完畢後應按 **登出**：
+
+* 公用電腦
+* 共用平板
+* 其他人的手機
+
+登出只會結束目前登入狀態，**不會刪除課表或課程進度**。
+
+---
+
+## 3. 首頁怎麼看
+
+首頁的主要用途不是顯示整張課表，而是直接回答三個問題：
+
+| 區塊       | 回答的問題       |
+| -------- | ----------- |
+| **上一堂**  | 我上一堂上的是哪一班？ |
+| **目前課程** | 我現在正在上哪一班？  |
+| **下一堂**  | 我接下來要去哪一班？  |
+
+例如：
+
+| 狀態   | 顯示內容            |
+| ---- | --------------- |
+| 上一堂  | 星期二第 2 節 — 二年一班 |
+| 目前課程 | 星期二第 3 節 — 一年三班 |
+| 下一堂  | 星期二第 5 節 — 二年四班 |
+
+如果第 4 節是空堂，網站會直接略過，不會把空堂當成下一堂。
+
+同樣的判斷也能跨越：
+
+* 空堂
+* 午休
+* 放學時間
+* 隔天
+* 週末
+* 每週邊界
+
+---
+
+## 4. 固定節次
+
+目前 G2 使用固定八節課時間：
+
+|    節次 | 上課時間        |
+| ----: | :---------- |
+| 第 1 節 | 08:10–09:00 |
+| 第 2 節 | 09:10–10:00 |
+| 第 3 節 | 10:10–11:00 |
+| 第 4 節 | 11:10–12:00 |
+| 第 5 節 | 13:05–13:55 |
+| 第 6 節 | 14:05–14:55 |
+| 第 7 節 | 15:10–16:00 |
+| 第 8 節 | 16:10–17:00 |
+
+網站會依 `Asia/Taipei` 的實際日期與時間，自動判斷目前位於哪一節。
+
+---
+
+## 5. 查看與更新課程進度
+
+每一門課都可以保存兩種主要內容：
+
+| 欄位     | 用途       | 範例           |
+| ------ | -------- | ------------ |
+| **進度** | 記錄實際教到哪裡 | 課本 P.72～P.76 |
+| **備註** | 留給下一堂的提醒 | 下一堂先講習題 4、5  |
+
+例如：
+
+> **一年三班數學**
+> 進度：課本 P.72～P.76
+> 備註：下一堂先講習題 4、5
+
+下次再次上到同一門課時，可以直接看到上一次留下的內容。
+
+### 儲存
+
+修改完成後按下 **儲存**。
+
+儲存成功後，正式資料會保存在學校主機，而不是只存在目前這支手機中。
+
+因此：
+
+* 關閉網站後資料仍存在。
+* 重新登入後資料仍存在。
+* 換另一支手機登入同一帳號後，仍能取得同一份正式資料。
+
+---
+
+## 6. 10 秒復原
+
+每次儲存進度後，系統會提供 **10 秒復原**。
+
+適合處理：
+
+* 打錯文字
+* 不小心刪除內容
+* 更新到錯誤進度
+* 儲存後立刻發現內容有問題
+
+在 10 秒內按下 **復原**，系統會把內容恢復成儲存前的版本。
+
+> **復原的限制**
+>
+> * 超過 10 秒後失效。
+> * 重新整理網頁後失效。
+> * 關閉網頁後失效。
+
+---
+
+## 7. 顯示設定
+
+教師可以自行調整：
+
+* 深色模式
+* 淺色模式
+* 文字大小
+
+這些設定只影響目前瀏覽器的顯示方式。
+
+它們**不會改變**：
+
+* 課表
+* 課程進度
+* 備註
+* 其他教師的設定
+
+因此換手機後，正式課表與進度仍然存在，但顯示設定可能需要重新調整。
+
+---
+
+## 8. 換手機時會發生什麼
+
+| 內容      | 換手機後     |
+| ------- | -------- |
+| 課表      | 保留       |
+| 班級      | 保留       |
+| 課程進度    | 保留       |
+| 備註      | 保留       |
+| 最後更新時間  | 保留       |
+| 深色／淺色模式 | 可能需要重新設定 |
+| 文字大小    | 可能需要重新設定 |
+
+只要在新裝置登入同一個帳號，就會讀取同一份正式資料。
+
+---
+
+## 9. 常見問題
+
+| 狀況            | 先做什麼              | 仍無法解決   |
+| ------------- | ----------------- | ------- |
+| 網頁完全打不開       | 確認是否連上正確的學校 Wi-Fi | 聯絡管理人員  |
+| 網頁可以開，但顯示服務異常 | 重新整理一次            | 聯絡管理人員  |
+| 一直要求重新登入      | 重新登入一次            | 回報管理人員  |
+| 課表內容不正確       | 確認是否登入正確帳號        | 回報管理人員  |
+| 進度看起來不正確      | 確認課程是否選對          | 回報管理人員  |
+| 換手機後顯示模式不同    | 重新調整深色／淺色與文字大小    | 不影響正式資料 |
+
+> 發生系統異常時，不需要自行修改手機的進階網路設定。
+
+---
+
+# 第二部分：系統管理與開發手冊
+
+> 本部分提供給負責安裝、開發、測試與維護 WDWELT 的人員。
+
+---
+
+## 1. 正式架構
+
+G2 正式環境只需要一台普通 Windows PC／Laptop。
 
 ```text
-today-progress-g1:preferences:v1
+教師手機／瀏覽器
+        │
+        │ 校內 LAN
+        │ TCP 8080
+        ▼
+┌─────────────────────────────┐
+│       WDWELT Node 主機       │
+│                             │
+│  ・正式前端                  │
+│  ・/api/*                    │
+│  ・身分驗證                  │
+│  ・登入工作階段              │
+│  ・/health/*                 │
+└──────────────┬──────────────┘
+               │
+               │ 127.0.0.1:3306
+               ▼
+        ┌─────────────┐
+        │ MySQL 8.0   │
+        │ Database g2 │
+        └─────────────┘
 ```
 
-預設為深色及中等文字。`index.html` 在載入應用程式前同步讀取設定並先標記背景，避免 fresh load 閃白。文字大小為 15px、17px、19px；表單控制即使在小字模式仍至少為 16px。
+### 正式環境不使用
 
-## 導覽與未儲存變更
+* Vite 開發伺服器
+* Docker
+* VM
+* reverse proxy
+* cloud database
+* 第二個 API process
 
-首頁、Settings、課表設定與進度編輯整合瀏覽器 History API：
+正式網頁、API 與 health endpoint 由**同一個 Node process**提供。
 
-- 首次載入以 `replaceState` 建立首頁狀態。
-- 進入內部畫面時使用 `pushState`。
-- 頁面返回按鈕、瀏覽器 Back／Forward 與 iPhone 返回手勢使用同一套導覽狀態。
-- 在首頁再次返回會正常離開網站，不會建立 Back loop。
+---
 
-課表或進度只有實際內容與進入畫面時的 snapshot 不同，離開時才會顯示「放棄變更／繼續編輯」。修改後恢復原值不會提示；成功儲存後也不再視為未儲存。真正關閉頁面時，dirty 狀態另以 `beforeunload` 作為瀏覽器原生保底。
+## 2. 執行需求
 
-## 進度復原
+| 項目      | 要求                       |
+| ------- | ------------------------ |
+| 作業系統    | Windows                  |
+| Node.js | `20.19+`／`22.12+` 或相容新版本 |
+| 資料庫     | MySQL 8.0                |
+| 正式資料庫   | `g2`                     |
+| 網頁服務    | TCP `8080`               |
+| MySQL   | `127.0.0.1:3306`         |
+| 認證資料    | 本機保存，不納入 Git             |
 
-進度儲存成功後，首頁顯示：
+---
 
-```text
-✓ 已儲存　[復原]
-```
+## 3. 基本啟動流程
 
-復原只存在目前頁面的 JavaScript memory：
-
-- 只還原最近一次 Save 前的 `progress`、`note` 與 `updatedAt`。
-- 10 秒後自動失效；下一次 Save 會取代前一次。
-- 成功復原或 reload 後立即失效。
-- 儲存或復原失敗時會顯示明確錯誤。
-
-## 背景時間更新
-
-應用程式以 Last／Current／Next 各自的 role、班級 identity、日期及起訖時間建立 context signature。30 秒 schedule 檢查只有在 signature 改變時才重建首頁並套用新的預設展開卡；signature 相同時保留使用者選擇。Progress、Note、updatedAt 與展開狀態不進入 signature。Settings、課表與進度表單不會被 timer 重建；回到前景、pageshow 或重新 focus 時會補做同一個比較。
-
-## 立即啟動：Deno
-
-在專案目錄開啟 PowerShell：
+在 repo 根目錄執行：
 
 ```powershell
-deno run -A --node-modules-dir=auto npm:vite@7.3.6
-```
-
-開啟終端機顯示的 `Local` 網址，通常是 `http://localhost:5173/`。網址加上 `?debug=1` 可顯示測試日期與時間控制；按 `Ctrl+C` 停止網站。
-
-## 使用 Node.js/npm
-
-需要 Node.js 20.19+ 或 22.12+：
-
-```powershell
-npm install
-npm run dev
-```
-
-正式建置與預覽：
-
-```powershell
-npm run build
-npm run preview
-```
-
-若 PowerShell 執行原則阻擋 `npm.ps1`，可改用 `npm.cmd install` 與 `npm.cmd run dev`，不必修改系統執行原則。
-
-## 在實體 iPhone 上操作
-
-電腦與 iPhone 必須在同一個 LAN。啟動允許其他裝置連線的 server：
-
-```powershell
-deno run -A --node-modules-dir=auto npm:vite@7.3.6 --host 0.0.0.0
-```
-
-使用 `ipconfig` 找出電腦的 IPv4 Address，然後在 iPhone Safari 開啟 `http://電腦IPv4:5173/`。iPhone 不可使用 `localhost`；各瀏覽器和裝置也各自擁有獨立 localStorage，不會自動同步。
-
-## 固定資料規則
-
-課表固定為星期一至星期五、第 1～8 節的 8×5 格子：
-
-| 節次 | 時間 |
-| --- | --- |
-| 1 | 08:10–09:00 |
-| 2 | 09:10–10:00 |
-| 3 | 10:10–11:00 |
-| 4 | 11:10–12:00 |
-| 5 | 13:05–13:55 |
-| 6 | 14:05–14:55 |
-| 7 | 15:10–16:00 |
-| 8 | 16:10–17:00 |
-
-每格只填班級；空格代表空堂。主要資料仍使用 `today-progress-g1:v2`。班級正規化、穩定 `courseId`、課表狀態判斷、自由文字進度及 storage v2 結構均未改動。
-
-本專案不處理科目、教室、學期、假日、臨時調課、通知、帳號、同步、匯出、匯入或統計。
-
-## G2 production LAN host
-
-正式部署使用 Vite production build 加同機 Node built-in HTTP host，固定監聽 TCP `8080`；不使用 Vite dev／preview、Docker、database、reverse proxy 或 cloud backend。
-
-```powershell
+npm.cmd install
 npm.cmd run build
-.\wdwelt.ps1 package -PackagePath .\artifacts\wdwelt-package
-.\artifacts\wdwelt-package\tools\wdwelt.ps1 install -CanonicalHost 192.168.1.50 -DryRun
+npm.cmd run host
 ```
 
-管理工具的相對路徑固定以 script 所在位置解析，設定檔內的相對路徑固定以設定檔所在目錄解析；因此不依賴 PowerShell 當下的 working directory，含空白的安裝路徑也可使用。第一次安裝請先閱讀 [INSTALLATION.md](INSTALLATION.md)。完整的單一 PC 架構、Start／Stop／Restart、Task Scheduler、health、network、logs、update／rollback、power audit、localStorage origin 與 07:00／school Wi-Fi 限制請見 [G2 Windows LAN Host 操作文件](docs/G2-Windows-LAN-Host.md)。
+`npm.cmd run host` 實際執行：
 
-## 驗證
+```text
+node g2/host/server.mjs --config g2/config.development.json
+```
+
+### 網址
+
+| 用途     | 網址                               |
+| ------ | -------------------------------- |
+| 主機本機   | `http://127.0.0.1:8080/`         |
+| 模擬前端時間 | `http://127.0.0.1:8080/?debug=1` |
+| 校內其他裝置 | `http://<主機區域網路 IPv4>:8080/`     |
+
+`?debug=1` 只控制前端模擬時間。
+
+例如：
+
+* `00:11` = 凌晨 12:11
+* `12:11` = 中午 12:11
+
+---
+
+## 4. 網路邊界
+
+### 對教師裝置
+
+只需要開放：
+
+**TCP `8080`**
+
+### 對 MySQL
+
+MySQL 必須只監聽：
+
+**`127.0.0.1:3306`**
+
+不應監聽：
+
+**`0.0.0.0:3306`**
+
+檢查方式：
 
 ```powershell
-npm test
-npm run typecheck
-npm run build
+Get-NetTCPConnection -LocalPort 3306 -State Listen |
+    Format-Table LocalAddress,LocalPort,State,OwningProcess
 ```
 
-測試涵蓋固定節次、Last／Current／Next 跨日 occurrence、timeline signature／選擇、storage v2 identity／persistence、Settings、Undo 精確還原，以及課表／進度草稿的 dirty snapshot 比較。
+預期結果應包含：
+
+```text
+127.0.0.1    3306    Listen
+```
+
+---
+
+## 5. 正式資料模型
+
+正式資料庫：
+
+`g2`
+
+### Application tables
+
+| 資料表                 | 用途      |
+| ------------------- | ------- |
+| `users`             | 使用者帳號   |
+| `sessions`          | 登入工作階段  |
+| `courses`           | 課程      |
+| `timetable_entries` | 課表項目    |
+| `course_progress`   | 課程進度與備註 |
+
+### Migration ledger
+
+`schema_migrations`
+
+正式課表、課程與進度以 MySQL 為唯一資料來源。
+
+---
+
+## 6. 身分驗證與工作階段
+
+### 密碼
+
+使用非同步：
+
+`crypto.scrypt()`
+
+每個帳號使用獨立 salt。
+
+### Session
+
+瀏覽器持有 opaque token。
+
+資料庫不保存原始 token，只保存：
+
+`SHA-256(token)`
+
+### 使用者隔離
+
+所有 API 中的：
+
+`user_id`
+
+一律由伺服器端 session 決定。
+
+Client 不得自行指定其他使用者的 `user_id`。
+
+不使用 wildcard CORS。
+
+---
+
+## 7. API
+
+### 帳號
+
+| 方法     | 路徑                   | 用途       |
+| ------ | -------------------- | -------- |
+| `POST` | `/api/auth/register` | 建立帳號     |
+| `POST` | `/api/auth/login`    | 登入       |
+| `POST` | `/api/auth/logout`   | 登出       |
+| `GET`  | `/api/auth/me`       | 取得目前登入身分 |
+
+### 課表
+
+| 方法       | 路徑               |
+| -------- | ---------------- |
+| `GET`    | `/api/timetable` |
+| `PUT`    | `/api/timetable` |
+| `DELETE` | `/api/timetable` |
+
+### 課程
+
+| 方法    | 路徑             |
+| ----- | -------------- |
+| `GET` | `/api/courses` |
+
+### 課程進度
+
+| 方法       | 路徑                        |
+| -------- | ------------------------- |
+| `GET`    | `/api/progress/:courseId` |
+| `PUT`    | `/api/progress/:courseId` |
+| `DELETE` | `/api/progress/:courseId` |
+| `DELETE` | `/api/progress`           |
+
+---
+
+## 8. 健康狀態
+
+| 路徑              | 檢查內容                 | DB 故障時         |
+| --------------- | -------------------- | -------------- |
+| `/health/live`  | Node process 是否存活    | `200`          |
+| `/health/ready` | 有 timeout 的 DB check | `503`          |
+| `/health`       | 完整狀態                 | `503 degraded` |
+
+`/health/live` 不代表資料庫可以使用。
+
+---
+
+## 9. 驗證流程
+
+完整基礎驗證：
+
+```powershell
+npm.cmd test
+npm.cmd run typecheck
+npm.cmd run build
+
+npm.cmd run test:db -- --config .\g2\runtime\config\migration.database.json
+npm.cmd run test:restore -- --config .\g2\runtime\config\migration.database.json
+
+npm.cmd run test:g2:lifecycle
+
+.\wdwelt.ps1 package -PackagePath .\artifacts\wdwelt-package
+```
+
+### 資料庫測試限制
+
+`test:db` 只允許唯一的：
+
+`wdwelt_test_*`
+
+temporary database。
+
+**禁止對 production `g2` 執行 destructive integration test。**
+
+### Lint
+
+目前沒有 lint script。
+
+因此驗證報告應明確標示：
+
+`lint unavailable`
+
+不得標示為通過。
+
+---
+
+## 10. G1 資料相容性
+
+舊 G1 正式資料 key：
+
+`today-progress-g1:v2`
+
+G2 對此資料採取以下處理：
+
+| 行為        | G2 |
+| --------- | -- |
+| 自動刪除      | 不會 |
+| 自動匯入帳號    | 不會 |
+| 登入後讀取正式課表 | 不會 |
+| 登入後寫入正式進度 | 不會 |
+
+唯一繼續保留的瀏覽器資料：
+
+`today-progress-g1:preferences:v1`
+
+用途：
+
+* theme
+* font size
+
+---
+
+## 11. 路徑與套件完整性
+
+### 路徑解析
+
+* 管理工具與 DB scripts 的 user-supplied 相對路徑，以 script 位置解析。
+* config 內的相對路徑，以該 config 所在目錄解析。
+
+### Package manifest
+
+部署套件會驗證下列內容的 SHA-256：
+
+* production frontend
+* Node host
+* MySQL runtime dependency
+* DB tools
+* migration
+* management scripts
+
+---
+
+## 12. 安裝、更新、備份與還原
+
+完整正式安裝流程：
+
+`INSTALLATION.md`
+
+包含：
+
+* credential
+* migration
+* backup
+* restore
+* 安全安裝流程
+
+Windows LAN 主機日常管理：
+
+`docs/G2-Windows-LAN-Host.md`
+
+包含：
+
+* 啟動
+* 停止
+* 狀態確認
+* 日常維護
+* 故障排查
+
+---
+
+# 第三部分：開發歷程
+
+> 這裡不是功能列表。
+> 這裡記錄 WDWELT 到底是怎麼從一個小問題一路長成現在這個東西。
+
+---
+
+## G0 — 最初問題
+
+### 起點
+
+沒有帳號。
+
+沒有資料庫。
+
+沒有正式主機。
+
+甚至還沒有 G1。
+
+只有兩個問題：
+
+> **「我這班上次上到哪？」**
+> **「我等等要上哪一班？」**
+
+### 當時決定
+
+專案不做完整校務系統。
+
+只解決：
+
+* 下一堂是哪一班
+* 上一堂教到哪
+* 快速記錄
+* 手機上能直接使用
+
+**結果：開始製作第一版。**
+
+---
+
+## G1 — 手機單機版
+
+### 做了什麼
+
+第一套真正能使用的教師介面完成。
+
+加入：
+
+* 8×5 固定課表
+* 上一堂
+* 目前課程
+* 下一堂
+* 課程進度
+* 備註
+* 最後更新時間
+* 快速更新
+* 10 秒復原
+* 深色／淺色模式
+* 文字大小
+* `Asia/Taipei` 課程判斷
+* iPhone 12 手機介面
+
+### 課程判斷進一步完成
+
+可以跨：
+
+`空堂 → 午休 → 隔天 → 週末 → 下一週`
+
+### 當時架構
+
+```text
+教師手機
+   │
+   ▼
+瀏覽器
+   │
+   ▼
+localStorage
+```
+
+正式資料存在：
+
+`today-progress-g1:v2`
+
+### G1 解決了什麼
+
+G1 證明一件事：
+
+> **這套操作方法本身能用。**
+
+教師不需要翻整張課表，也不需要另外開記事工具。
+
+打開網站就能看到：
+
+**上一堂 → 現在 → 下一堂 → 上次進度**
+
+### G1 最後卡在哪
+
+資料跟著瀏覽器走。
+
+換手機就不是同一份正式資料。
+
+多台裝置之間也沒有共同來源。
+
+**下一個問題從「介面」變成「資料」。**
+
+---
+
+## G2.0 — 中央資料方向確立
+
+### 新需求
+
+正式課表與課程進度不能再依賴教師自己的手機保存。
+
+### 同時鎖定部署限制
+
+不買專用伺服器。
+
+不使用雲端。
+
+不使用 Docker。
+
+不使用 VM。
+
+只使用：
+
+> **一台普通 Windows PC／Laptop**
+
+並且只在校內 LAN 中提供服務。
+
+### 新架構方向
+
+```text
+教師手機
+   │
+   │ 校內 LAN
+   ▼
+Windows 主機
+   │
+   ▼
+中央資料庫
+```
+
+資料庫選定：
+
+**MySQL 8.0**
+
+---
+
+## G2.1 — MySQL 接通
+
+### 第一個中央資料庫
+
+建立：
+
+`g2`
+
+Node 成功連線：
+
+```text
+MySQL connected.
+```
+
+並成功讀取：
+
+`users`
+
+### 這一步代表什麼
+
+架構正式從：
+
+```text
+Browser
+  ↓
+localStorage
+```
+
+跨到：
+
+```text
+Browser
+  ↓
+Node
+  ↓
+MySQL
+```
+
+這是 G2 真正開始的地方。
+
+---
+
+## G2.2 — 帳號與身分
+
+中央資料出現之後馬上產生下一個問題：
+
+> **「這份課表到底是誰的？」**
+
+因此開始加入使用者身分。
+
+### 新增
+
+* 建立帳號
+* 登入
+* 登出
+* reload 後 session restore
+
+### 資料表逐步形成
+
+* `users`
+* `sessions`
+* `courses`
+* `timetable_entries`
+* `course_progress`
+
+每個帳號開始擁有自己的正式資料。
+
+---
+
+## G2.3 — 正式資料 API 化
+
+G1 的 UI 保留。
+
+底層資料流改寫。
+
+### 舊
+
+```text
+UI
+ ↓
+localStorage
+```
+
+### 新
+
+```text
+UI
+ ↓
+/api/*
+ ↓
+Node
+ ↓
+MySQL
+```
+
+### 加入
+
+* Auth API
+* Timetable API
+* Courses API
+* Progress API
+
+至此，G1 的教師介面第一次真正接上中央資料。
+
+---
+
+## G2.4 — 正式 LAN 主機
+
+開發期間的 Vite dev server 不再適合作為正式運行方式。
+
+因此加入自己的 production Node host。
+
+### 單一 process 負責
+
+* 正式前端
+* `/api/*`
+* `/health/*`
+* 帳號驗證
+* Session
+* MySQL 存取
+
+### 對外只提供
+
+`TCP 8080`
+
+### MySQL 留在本機
+
+`127.0.0.1:3306`
+
+正式架構至此成形：
+
+```text
+教師手機
+    │
+    │ :8080
+    ▼
+WDWELT Node
+    │
+    │ :3306
+    ▼
+MySQL g2
+```
+
+---
+
+## G2.5 — 從「能跑」到「能部署」
+
+做到這裡之後，核心功能已經不是主要問題。
+
+新的問題變成：
+
+> **「這東西真的放進一台 Windows 電腦後，能不能可靠地裝、更新、備份、壞掉再救回來？」**
+
+因此開始補齊正式維運能力。
+
+### 加入
+
+* DB migration
+* DB preflight
+* backup
+* restore
+* Windows lifecycle
+* production build
+* package
+* install
+* update
+* rollback
+* health check
+* package integrity verification
+
+### 文件開始形成
+
+* `INSTALLATION.md`
+* `docs/G2-Windows-LAN-Host.md`
+
+WDWELT 開始從「專案」往「可以部署的軟體」移動。
+
+---
+
+# G2 試行版 0.3.0 — 現在
+
+## 現在的系統
+
+```text
+教師手機
+    │
+    │ 校內 LAN :8080
+    ▼
+┌──────────────────────────┐
+│       WDWELT Node        │
+│                          │
+│  教師介面                │
+│  帳號系統                │
+│  Session                 │
+│  API                     │
+│  Health                  │
+└────────────┬─────────────┘
+             │
+             │ 127.0.0.1:3306
+             ▼
+        MySQL g2
+```
+
+## 現在已經有
+
+| 領域     | 現況                    |
+| ------ | --------------------- |
+| 教師操作介面 | G1 核心流程保留             |
+| 課表判斷   | Last / Current / Next |
+| 正式資料   | 中央 MySQL              |
+| 多使用者   | 帳號隔離                  |
+| 登入     | Session restore       |
+| 資料交換   | `/api/*`              |
+| 正式服務   | Node LAN host         |
+| DB 更新  | Migration             |
+| 資料保護   | Backup / Restore      |
+| 維運     | Windows lifecycle     |
+| 發布     | Production package    |
+
+## 目前基礎驗證
+
+* **65 / 65 tests 通過**
+* **TypeScript 型別檢查通過**
+* **正式建置通過**
+
+## 現在正在處理
+
+核心 G2 架構已經存在。
+
+部署前強化已完成程式與自動化驗證；尚待目標 Windows 主機完成 MySQL localhost bind 與實際手機 LAN 驗收：
+
+1. Fresh install
+2. Migration edge cases
+3. Windows path handling
+4. Install / update / rollback
+5. Backup / restore
+6. Host lifecycle
+7. 實際校內環境驗證
+
+---
+
+# 整個專案一路怎麼走過來
+
+| 階段           | 當時在解決什麼          | 結果                           |
+| ------------ | ---------------- | ---------------------------- |
+| **G0**       | 老師不知道上次上到哪       | 決定做工具                        |
+| **G1**       | 怎麼讓老師最快看到課程與進度   | 手機版完成                        |
+| **G1 後期**    | 怎麼正確判斷上一堂、現在、下一堂 | 課程時間邏輯完成                     |
+| **G1 限制**    | 資料綁在手機           | 決定做中央資料                      |
+| **G2.0**     | 中央資料放哪           | MySQL                        |
+| **G2.1**     | 網站怎麼碰到資料庫        | Node ↔ MySQL                 |
+| **G2.2**     | 怎麼知道資料是誰的        | 帳號與 session                  |
+| **G2.3**     | 前端怎麼讀寫中央資料       | API                          |
+| **G2.4**     | 怎麼讓手機真正連進來       | LAN Node host                |
+| **G2.5**     | 怎麼正式安裝與救援        | Migration / Backup / Restore |
+| **G2 0.3.0** | 能不能準備進真實環境       | 部署前強化                        |
+
+---
+
+## 一句話版本
+
+```text
+G0
+一個問題
+   ↓
+G1
+一個真的能用的手機工具
+   ↓
+G2
+一個有中央資料、帳號與正式主機的校內系統
+   ↓
+0.3.0
+準備從「開發完成」跨到「實際部署」
+```

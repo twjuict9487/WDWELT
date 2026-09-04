@@ -2,8 +2,11 @@ node_modules/
 dist/
 artifacts/
 g2/runtime/
+g2/config.database.local.json
+test-db.js
 .deno-cache/
 deno.lock
 *.tsbuildinfo
 *.local
 .DS_Store
+LOCAL-G2-AUDIT-REPORT.md

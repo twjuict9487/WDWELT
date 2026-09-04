@@ -1,0 +1,16 @@
+{
+  "host": "127.0.0.1",
+  "port": 3306,
+  "database": "g2",
+  "user": "wdwelt_app",
+  "password": "REPLACE_WITH_LOCAL_SECRET",
+  "connectionLimit": 5,
+  "connectTimeoutMs": 3000,
+  "readyTimeoutMs": 2000,
+  "reconnectInitialSeconds": 1,
+  "reconnectMaxSeconds": 30,
+  "sessionDurationHours": 12,
+  "sessionCleanupMinutes": 60,
+  "mysqlDumpPath": "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysqldump.exe",
+  "mysqlClientPath": "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe"
+}

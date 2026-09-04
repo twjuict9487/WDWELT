@@ -33,7 +33,7 @@ let nextSampleAt = 0;
 
 async function waitForHealth() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    try { const response = await fetch('http://127.0.0.1:8080/health'); if (response.ok) return; } catch { /* retry */ }
+    try { const response = await fetch('http://127.0.0.1:8080/health/live'); if (response.ok) return; } catch { /* retry */ }
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
   throw new Error(`production host did not become healthy: ${childError}`);
@@ -44,7 +44,7 @@ try {
   while (Date.now() - startedAt < durationMs) {
     inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
     try {
-      const response = await fetch('http://127.0.0.1:8080/health', { signal: AbortSignal.timeout(2_000) });
+      const response = await fetch('http://127.0.0.1:8080/health/live', { signal: AbortSignal.timeout(2_000) });
       const body = await response.json();
       requests += 1;
       if (!response.ok || body.status !== 'ok' || !body.version || !body.build) failures += 1;
