@@ -3,8 +3,8 @@ import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, appendFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRequestHandler, readRelease, safeStaticPath } from '../g2/host/host-core.mjs';
-import { createLogger } from '../g2/host/logger.mjs';
+import { createRequestHandler, readRelease, safeStaticPath } from '../server/app/host-core.mjs';
+import { createLogger } from '../server/app/logger.mjs';
 
 const temporaryDirectories = [];
 afterEach(() => { while (temporaryDirectories.length) rmSync(temporaryDirectories.pop(), { recursive: true, force: true }); });

@@ -4,14 +4,15 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from './mysql-driver.mjs';
-import { createApiHandler } from '../g2/host/api.mjs';
-import { hashSessionToken } from '../g2/host/auth.mjs';
-import { DatabaseManager } from '../g2/host/db.mjs';
-import { databaseConnectionOptions, loadDatabaseConfig } from './config.mjs';
-import { runMigrations } from './migrate.mjs';
+import mysql from '../../db/core/mysql-driver.mjs';
+import { createApiHandler } from '../../server/app/api.mjs';
+import { hashSessionToken } from '../../server/app/auth.mjs';
+import { DatabaseManager } from '../../server/app/db.mjs';
+import { databaseConnectionOptions, loadDatabaseConfig } from '../../db/core/config.mjs';
+import { runMigrations } from '../../db/operations/migrate.mjs';
+import { runPreflight } from '../../db/operations/preflight.mjs';
 
-const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const projectRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const configIndex = process.argv.indexOf('--config');
 const adminConfigPath = (configIndex >= 0 ? process.argv[configIndex + 1] : process.argv[2]) ?? process.env.WDWELT_DB_ADMIN_CONFIG;
 if (!adminConfigPath) throw new Error('Integration test requires an administrative config path');
@@ -60,6 +61,8 @@ try {
   await recoveryManager.close();
   recoveryManager = null;
   writeFileSync(testConfigPath, `${JSON.stringify({ ...admin, database: testDatabase, configPath: undefined }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  const emptyPreflight = await runPreflight(testConfigPath);
+  assert(emptyPreflight.usersSchema.length === 0 && emptyPreflight.usersCount.length === 0, 'preflight accepted a new empty application database before initial migration');
   const setup = await mysql.createConnection(databaseConnectionOptions({ ...admin, database: testDatabase }));
   try {
     await setup.query(`CREATE TABLE users (

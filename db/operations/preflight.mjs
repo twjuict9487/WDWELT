@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from './mysql-driver.mjs';
-import { databaseConnectionOptions, loadDatabaseConfig } from './config.mjs';
+import mysql from '../core/mysql-driver.mjs';
+import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
 
 const argument = (name) => {
   const index = process.argv.indexOf(name);
@@ -19,12 +19,18 @@ export async function runPreflight(configPath) {
       ['currentUser', 'SELECT CURRENT_USER() AS value'],
       ['bindAddress', 'SHOW VARIABLES LIKE "bind_address"'],
       ['tables', 'SHOW TABLES'],
-      ['usersSchema', 'SHOW CREATE TABLE users'],
-      ['usersCount', 'SELECT COUNT(*) AS value FROM users'],
       ['grants', 'SHOW GRANTS'],
     ]) {
       const [rows] = await connection.query(sql);
       output[name] = rows;
+    }
+    const [usersTables] = await connection.execute('SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ? AND table_name = ?', [config.database, 'users']);
+    if (Number(usersTables[0]?.count) > 0) {
+      output.usersSchema = (await connection.query('SHOW CREATE TABLE users'))[0];
+      output.usersCount = (await connection.query('SELECT COUNT(*) AS value FROM users'))[0];
+    } else {
+      output.usersSchema = [];
+      output.usersCount = [];
     }
     const [appUsers] = await connection.query("SELECT User, Host, plugin, account_locked FROM mysql.user WHERE User = 'wdwelt_app'");
     output.wdweltAppUsers = appUsers;

@@ -8,7 +8,7 @@ import { createRequestHandler, readRelease } from './host-core.mjs';
 import { createLogger } from './logger.mjs';
 import { createApiHandler } from './api.mjs';
 import { DatabaseManager, UnavailableDatabaseManager } from './db.mjs';
-import { loadDatabaseConfig } from '../../db/config.mjs';
+import { loadDatabaseConfig } from '../../db/core/config.mjs';
 
 const hostDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = dirname(dirname(hostDir));
@@ -18,7 +18,7 @@ const requiredMigrationChecksum = createHash('sha256').update(requiredMigrationS
 const readJsonFile = (path) => JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
 const args = process.argv.slice(2);
 const valueAfter = (name, fallback) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; };
-const configArgument = valueAfter('--config', 'g2/config.development.json');
+const configArgument = valueAfter('--config', 'config/development.json');
 const configPath = isAbsolute(configArgument) ? configArgument : resolve(projectRoot, configArgument);
 const config = readJsonFile(configPath);
 const configDirectory = dirname(configPath);
@@ -79,7 +79,7 @@ server.on('error', (error) => {
     } catch { /* occupation is still reported without guessing */ }
   }
   const message = error.code === 'EADDRINUSE'
-    ? `Port ${port} 已被占用（${owner}）；WDWELT 不會改用其他 port，也不會停止占用程序。請執行 .\\wdwelt.ps1 network 查看占用資訊。`
+    ? `Port ${port} 已被占用（${owner}）；WDWELT 不會改用其他 port，也不會停止占用程序。請執行 WDWELT 管理工具的 network 指令查看占用資訊。`
     : `Host 啟動失敗：${error.message}`;
   log('error', error.code === 'EADDRINUSE' ? 'duplicate_attempt' : 'crash', message);
   console.error(message);

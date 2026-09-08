@@ -10,8 +10,9 @@ try {
   if (error?.code !== 'MODULE_NOT_FOUND') throw error;
   const databaseDirectory = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    resolve(databaseDirectory, '..', 'host', 'server.mjs'),
-    resolve(databaseDirectory, '..', 'tools', 'host', 'server.mjs'),
+    resolve(databaseDirectory, '..', '..', 'server', 'app', 'server.mjs'),
+    resolve(databaseDirectory, '..', '..', 'host', 'server.mjs'),
+    resolve(databaseDirectory, '..', '..', 'tools', 'host', 'server.mjs'),
   ];
   let lastError = error;
   for (const candidate of candidates) {

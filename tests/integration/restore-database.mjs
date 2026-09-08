@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from './mysql-driver.mjs';
-import { databaseConnectionOptions, loadDatabaseConfig, protectLocalFile } from './config.mjs';
-import { restoreDatabase } from './restore.mjs';
+import mysql from '../../db/core/mysql-driver.mjs';
+import { databaseConnectionOptions, loadDatabaseConfig, protectLocalFile } from '../../db/core/config.mjs';
+import { restoreDatabase } from '../../db/operations/restore.mjs';
 
 const configIndex = process.argv.indexOf('--config');
 const adminConfigPath = (configIndex >= 0 ? process.argv[configIndex + 1] : process.argv[2]) ?? process.env.WDWELT_DB_ADMIN_CONFIG;
@@ -17,7 +17,7 @@ const root = mkdtempSync(join(tmpdir(), 'wdwelt restore integration '));
 const configPath = join(root, 'database.json');
 const backupPath = join(root, 'fixture.sql');
 const wrongDatabaseBackupPath = join(root, 'wrong-database.sql');
-const migrationsPath = resolve(dirname(fileURLToPath(import.meta.url)), 'migrations');
+const migrationsPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../db/migrations');
 let created = false;
 
 try {

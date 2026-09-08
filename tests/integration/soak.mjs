@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,10 +7,12 @@ import { fileURLToPath } from 'node:url';
 const durationMs = Number(process.env.WDWELT_SOAK_MS ?? 30_000);
 const intervalMs = 100;
 const projectRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const buildRoot = join(projectRoot, 'dist');
+const sourceBuildRoot = join(projectRoot, 'dist');
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'wdwelt soak '));
+const buildRoot = join(temporaryRoot, 'current');
 const configPath = join(temporaryRoot, 'config.json');
 const runPath = join(temporaryRoot, 'run');
+cpSync(sourceBuildRoot, buildRoot, { recursive: true });
 writeFileSync(configPath, JSON.stringify({
   port: 8080, bindAddress: '127.0.0.1', canonicalHost: '127.0.0.1', canonicalUrl: 'http://127.0.0.1:8080',
   installPath: temporaryRoot, currentPath: buildRoot, logPath: join(temporaryRoot, 'logs'), runPath,
@@ -18,7 +20,7 @@ writeFileSync(configPath, JSON.stringify({
   maintenanceLockMinutes: 1, logRetentionDays: 2, logMaxBytes: 100_000,
 }));
 
-const child = spawn(process.execPath, [join(projectRoot, 'g2/host/server.mjs'), '--root', buildRoot, '--config', configPath], {
+const child = spawn(process.execPath, [join(projectRoot, 'server/app/server.mjs'), '--root', buildRoot, '--config', configPath], {
   cwd: projectRoot, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
 });
 let childError = '';
@@ -30,6 +32,7 @@ let maxInFlight = 0;
 const memorySamples = [];
 const startedAt = Date.now();
 let nextSampleAt = 0;
+let runError;
 
 async function waitForHealth() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -57,6 +60,8 @@ try {
     finally { inFlight -= 1; }
     await new Promise((resolveWait) => setTimeout(resolveWait, intervalMs));
   }
+} catch (error) {
+  runError = error;
 } finally {
   try {
     const record = JSON.parse(readFileSync(join(runPath, 'host.pid.json'), 'utf8').replace(/^\uFEFF/, ''));
@@ -76,9 +81,10 @@ const result = {
   elapsedSeconds, requests, failures, maxInFlight,
   hostRssStartBytes: firstRss, hostRssMidpointBytes: midpointRss, hostRssEndBytes: endRss,
   hostRssDeltaBytes: endRss - firstRss, hostRssTailDeltaBytes: endRss - midpointRss,
-  hostRssPeakBytes: Math.max(...memorySamples.map((sample) => sample.rss)), memorySamples,
+  hostRssPeakBytes: memorySamples.length ? Math.max(...memorySamples.map((sample) => sample.rss)) : 0, memorySamples,
   restartLoops: 0, hostExitCode: child.exitCode, orphanProcess: child.exitCode === null,
 };
 console.log(JSON.stringify(result, null, 2));
 rmSync(temporaryRoot, { recursive: true, force: true });
+if (runError) throw runError;
 if (failures || maxInFlight > 1 || child.exitCode !== 0) process.exitCode = 1;

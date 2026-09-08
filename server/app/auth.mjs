@@ -9,7 +9,7 @@ export {
   PASSWORD_PARAMETERS,
   validatePassword,
   verifyPassword,
-} from '../../db/password.mjs';
+} from '../../db/core/password.mjs';
 
 export function createSessionToken() {
   const token = randomBytes(32).toString('base64url');

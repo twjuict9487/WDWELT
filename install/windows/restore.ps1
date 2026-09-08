@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference='Stop'
 $ProjectRoot=Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 function Resolve-LocalPath([string]$Value,[string]$Base){if([IO.Path]::IsPathRooted($Value)){return [IO.Path]::GetFullPath($Value)};return [IO.Path]::GetFullPath((Join-Path $Base $Value))}
-$ConfigPath=if($ConfigPath){Resolve-LocalPath $ConfigPath $PSScriptRoot}else{Join-Path $ProjectRoot 'g2\config.development.json'}
+$ConfigPath=if($ConfigPath){Resolve-LocalPath $ConfigPath $PSScriptRoot}else{Join-Path $ProjectRoot 'config\development.json'}
 $config=Get-Content -Raw -Encoding UTF8 -LiteralPath $ConfigPath|ConvertFrom-Json
 $configDirectory=Split-Path -Parent $ConfigPath
 $AdminConfigPath=if($AdminConfigPath){Resolve-LocalPath $AdminConfigPath $PSScriptRoot}elseif($config.adminDatabaseConfigPath){Resolve-LocalPath ([string]$config.adminDatabaseConfigPath) $configDirectory}else{throw '設定缺少 adminDatabaseConfigPath。'}
@@ -16,7 +16,7 @@ $BackupFile=Resolve-LocalPath $BackupFile $PSScriptRoot
 $runPath=Resolve-LocalPath ([string]$config.runPath) $configDirectory
 $logPath=Resolve-LocalPath ([string]$config.logPath) $configDirectory
 $node=if($config.nodePath){Resolve-LocalPath ([string]$config.nodePath) $configDirectory}else{(Get-Command node -ErrorAction Stop).Source}
-$tool=Join-Path $ProjectRoot 'wdwelt.ps1';$restoreScript=Join-Path $ProjectRoot 'db\restore.mjs';$migrations=Join-Path $ProjectRoot 'db\migrations';$lock=Join-Path $runPath 'maintenance-lock.json'
+$tool=if(Test-Path -LiteralPath (Join-Path $ProjectRoot 'install\wdwelt.ps1')){Join-Path $ProjectRoot 'install\wdwelt.ps1'}else{Join-Path $ProjectRoot 'tools\wdwelt.ps1'};$restoreScript=Join-Path $ProjectRoot 'db\operations\restore.mjs';$migrations=Join-Path $ProjectRoot 'db\migrations';$lock=Join-Path $runPath 'maintenance-lock.json'
 function Write-RestoreLog([string]$Level,[string]$Event,[string]$Message){[IO.Directory]::CreateDirectory($logPath)|Out-Null;$record=[ordered]@{timestamp=[DateTimeOffset]::UtcNow.ToString('o');level=$Level;event=$Event;version='0.3.0';build='database';message=$Message};Add-Content -Encoding UTF8 -LiteralPath (Join-Path $logPath 'operations.jsonl') -Value ($record|ConvertTo-Json -Compress)}
 $lockAcquired=$false
 try{

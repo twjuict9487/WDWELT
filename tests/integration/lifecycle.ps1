@@ -20,13 +20,12 @@ function Write-Manifest([string]$Root,[string]$Version,[string]$Build){
 function New-Package([string]$Name,[string]$Version,[string]$Build,[switch]$BrokenHost){
   $root=Join-Path $PackageRoot $Name;New-Item $root\production,$root\host,$root\tools\database,$root\db -ItemType Directory -Force|Out-Null
   Copy-Item (Join-Path $ProjectRoot 'dist\*') $root\production -Recurse
-  Copy-Item (Join-Path $ProjectRoot 'g2\host\*') $root\host -Recurse
-  foreach($databaseFile in @('backup.mjs','bootstrap.mjs','config.mjs','migrate.mjs','mysql-driver.mjs','mysql-option-file.mjs','password.mjs','preflight.mjs','restore.mjs','runtime-check.mjs')){Copy-Item -LiteralPath (Join-Path $ProjectRoot "db\$databaseFile") -Destination (Join-Path $root "db\$databaseFile")}
-  Copy-Item -LiteralPath (Join-Path $ProjectRoot 'db\migrations') -Destination (Join-Path $root 'db\migrations') -Recurse
-  Copy-Item (Join-Path $ProjectRoot 'g2\scripts\backup.ps1') $root\tools\database\backup.ps1
-  Copy-Item (Join-Path $ProjectRoot 'g2\scripts\restore.ps1') $root\tools\database\restore.ps1
-  Copy-Item (Join-Path $ProjectRoot 'wdwelt.ps1') $root\tools\wdwelt.ps1
-  & (Get-Command node).Source (Join-Path $ProjectRoot 'g2\scripts\copy-production-dependencies.mjs') $ProjectRoot $root\host\node_modules | Out-Host
+  Copy-Item (Join-Path $ProjectRoot 'server\app\*') $root\host -Recurse
+  foreach($databaseDirectory in @('core','operations','migrations')){Copy-Item -LiteralPath (Join-Path $ProjectRoot "db\$databaseDirectory") -Destination (Join-Path $root "db\$databaseDirectory") -Recurse}
+  Copy-Item (Join-Path $ProjectRoot 'install\windows\backup.ps1') $root\tools\database\backup.ps1
+  Copy-Item (Join-Path $ProjectRoot 'install\windows\restore.ps1') $root\tools\database\restore.ps1
+  Copy-Item (Join-Path $ProjectRoot 'install\wdwelt.ps1') $root\tools\wdwelt.ps1
+  & (Get-Command node).Source (Join-Path $ProjectRoot 'scripts\build\copy-production-dependencies.mjs') $ProjectRoot $root\host\node_modules | Out-Host
   if($LASTEXITCODE-ne0){throw 'Could not stage production dependencies.'}
   $metadata=Get-Content -Raw -Encoding UTF8 $root\production\build-metadata.json|ConvertFrom-Json;$metadata.version=$Version;$metadata.build=$Build;$metadata|ConvertTo-Json|Set-Content -Encoding UTF8 $root\production\build-metadata.json
   if($BrokenHost){Set-Content -Encoding UTF8 $root\host\server.mjs 'process.exit(23);'}
@@ -39,13 +38,13 @@ try{
   if($occupied){throw 'Port 8080 is already occupied; lifecycle test did not touch its owner.'}
   foreach($dir in @('current','previous','config','logs','run','backups','tools\host','db','packages')){New-Item (Join-Path $TestRoot $dir) -ItemType Directory -Force|Out-Null}
   Copy-Item (Join-Path $ProjectRoot 'dist\*') (Join-Path $TestRoot 'current') -Recurse
-  Copy-Item (Join-Path $ProjectRoot 'g2\host\*') (Join-Path $TestRoot 'tools\host') -Recurse
+  Copy-Item (Join-Path $ProjectRoot 'server\app\*') (Join-Path $TestRoot 'tools\host') -Recurse
   Copy-Item (Join-Path $ProjectRoot 'db\*') (Join-Path $TestRoot 'db') -Recurse
   Set-Content -Encoding UTF8 -LiteralPath (Join-Path $TestRoot 'db\legacy-marker.txt') -Value 'legacy database tools'
-  & (Get-Command node).Source (Join-Path $ProjectRoot 'g2\scripts\copy-production-dependencies.mjs') $ProjectRoot (Join-Path $TestRoot 'tools\host\node_modules')
+  & (Get-Command node).Source (Join-Path $ProjectRoot 'scripts\build\copy-production-dependencies.mjs') $ProjectRoot (Join-Path $TestRoot 'tools\host\node_modules')
   if($LASTEXITCODE-ne0){throw 'Could not stage host production dependencies.'}
-  Copy-Item (Join-Path $ProjectRoot 'wdwelt.ps1') $Tool
-  $config=@{port=8080;bindAddress='127.0.0.1';canonicalHost='127.0.0.1';canonicalUrl='http://127.0.0.1:8080';installPath='..';currentPath='..\current';logPath='..\logs';runPath='..\run';nodePath=(Get-Command node).Source;healthIntervalSeconds=1;healthTimeoutSeconds=2;healthFailureThreshold=2;recoveryCooldownSeconds=30;maintenanceLockMinutes=1;logRetentionDays=2;logMaxBytes=100000}
+  Copy-Item (Join-Path $ProjectRoot 'install\wdwelt.ps1') $Tool
+  $config=@{port=8080;bindAddress='127.0.0.1';canonicalHost='192.168.0.18';canonicalUrl='http://192.168.0.18:8080';networkPolicy='school-fixed-v1';networkPrefixLength=22;networkGateway='192.168.1.254';allowedRemoteAddresses=@('192.168.0.0/22');installPath='..';currentPath='..\current';logPath='..\logs';runPath='..\run';nodePath=(Get-Command node).Source;healthIntervalSeconds=1;healthTimeoutSeconds=2;healthFailureThreshold=2;recoveryCooldownSeconds=30;maintenanceLockMinutes=1;logRetentionDays=2;logMaxBytes=100000}
   $config|ConvertTo-Json|Set-Content -Encoding UTF8 $ConfigPath
 
   $unknownScript=Join-Path $TestRoot 'unknown-port-owner.mjs'
@@ -106,9 +105,9 @@ try{
   $fakeRuntime=Join-Path $TestRoot 'runtime-db.json';$fakeAdmin=Join-Path $TestRoot 'admin-db.json';'{"host":"127.0.0.1","database":"g2","user":"test","password":"test"}'|Set-Content -Encoding UTF8 $fakeRuntime;Copy-Item $fakeRuntime $fakeAdmin
   $dryInstall=Join-Path $TestRoot 'dry run install target'
   Push-Location $env:SystemRoot
-  try{& (Join-Path $success 'tools\wdwelt.ps1') install -InstallPath $dryInstall -CanonicalHost 127.0.0.1 -NodePath $config.nodePath -DatabaseConfigPath $fakeRuntime -AdminDatabaseConfigPath $fakeAdmin -DryRun;Assert-True ($LASTEXITCODE-eq0) 'packaged installer auto-detected package root from another working directory'}finally{Pop-Location}
+  try{& (Join-Path $success 'tools\wdwelt.ps1') install -InstallPath $dryInstall -CanonicalHost 192.168.0.18 -AllowedRemoteAddress 192.168.0.0/22 -NodePath $config.nodePath -DatabaseConfigPath $fakeRuntime -AdminDatabaseConfigPath $fakeAdmin -DryRun;Assert-True ($LASTEXITCODE-eq0) 'packaged installer auto-detected package root from another working directory'}finally{Pop-Location}
   Assert-True (-not(Test-Path -LiteralPath $dryInstall)) 'installer dry-run made no filesystem changes'
-  & (Join-Path $success 'tools\wdwelt.ps1') install -InstallPath $TestRoot -CanonicalHost 127.0.0.1 -NodePath $config.nodePath -DatabaseConfigPath $fakeRuntime -AdminDatabaseConfigPath $fakeAdmin -DryRun
+  & (Join-Path $success 'tools\wdwelt.ps1') install -InstallPath $TestRoot -CanonicalHost 192.168.0.18 -AllowedRemoteAddress 192.168.0.0/22 -NodePath $config.nodePath -DatabaseConfigPath $fakeRuntime -AdminDatabaseConfigPath $fakeAdmin -DryRun
   Assert-True ($LASTEXITCODE-eq0) 'repeat installer dry-run accepted the existing canonical origin'
   $originChangeFailed=$false
   try{& (Join-Path $success 'tools\wdwelt.ps1') install -InstallPath $TestRoot -CanonicalHost 192.0.2.10 -NodePath $config.nodePath -DatabaseConfigPath $fakeRuntime -AdminDatabaseConfigPath $fakeAdmin -DryRun}catch{$originChangeFailed=$true}
@@ -134,8 +133,8 @@ try{
   try{& $Tool rollback -ConfigPath $ConfigPath}catch{$failedRollback=$true}
   Assert-True ($failedRollback-or$LASTEXITCODE-ne0) 'broken previous host made rollback fail'
   $health=Invoke-RestMethod http://127.0.0.1:8080/health/live;Assert-True ($health.version-eq'0.2.1'-and$health.build-eq'integration-success') 'failed manual rollback restored original healthy release'
-  Remove-Item $TestRoot\run\previous-host -Recurse -Force;Copy-Item (Join-Path $ProjectRoot 'g2\host') $TestRoot\run\previous-host -Recurse
-  & (Get-Command node).Source (Join-Path $ProjectRoot 'g2\scripts\copy-production-dependencies.mjs') $ProjectRoot (Join-Path $TestRoot 'run\previous-host\node_modules') | Out-Host
+  Remove-Item $TestRoot\run\previous-host -Recurse -Force;Copy-Item (Join-Path $ProjectRoot 'server\app') $TestRoot\run\previous-host -Recurse
+  & (Get-Command node).Source (Join-Path $ProjectRoot 'scripts\build\copy-production-dependencies.mjs') $ProjectRoot (Join-Path $TestRoot 'run\previous-host\node_modules') | Out-Host
   if($LASTEXITCODE-ne0){throw 'Could not restore previous host dependencies.'}
   Invoke-Tool rollback
   Assert-True (Test-Path $TestRoot\db\legacy-marker.txt) 'manual rollback restored matching database tools'

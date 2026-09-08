@@ -2,12 +2,12 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from './mysql-driver.mjs';
-import { databaseConnectionOptions, loadDatabaseConfig } from './config.mjs';
-import { derivePasswordHash, normalizeUsername } from './password.mjs';
+import mysql from '../core/mysql-driver.mjs';
+import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
+import { derivePasswordHash, normalizeUsername } from '../core/password.mjs';
 
 const dbRoot = dirname(fileURLToPath(import.meta.url));
-const defaultMigrationsPath = join(dbRoot, 'migrations');
+const defaultMigrationsPath = resolve(dbRoot, '..', 'migrations');
 
 function argument(name) {
   const index = process.argv.indexOf(name);

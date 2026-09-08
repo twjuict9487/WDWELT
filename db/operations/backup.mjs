@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadDatabaseConfig, protectLocalFile } from './config.mjs';
-import { createTemporaryOptionFile } from './mysql-option-file.mjs';
+import { loadDatabaseConfig, protectLocalFile } from '../core/config.mjs';
+import { createTemporaryOptionFile } from '../core/mysql-option-file.mjs';
 
 const argument = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : null; };
 

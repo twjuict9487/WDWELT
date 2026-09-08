@@ -2,8 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from './mysql-driver.mjs';
-import { databaseConnectionOptions, loadDatabaseConfig, writeProtectedJson } from './config.mjs';
+import mysql from '../core/mysql-driver.mjs';
+import { databaseConnectionOptions, loadDatabaseConfig, writeProtectedJson } from '../core/config.mjs';
 
 const argument = (name) => {
   const index = process.argv.indexOf(name);

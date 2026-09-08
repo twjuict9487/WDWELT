@@ -6,6 +6,27 @@
 
 Application data 的唯一來源是 MySQL。舊 `today-progress-g1:v2` localStorage 保留但不讀寫、不自動匯入；theme／font size 仍使用 preference key。
 
+## 固定校內網路政策
+
+以下值由 `install/deployment.settings.json` 提供；換部署環境時只修改該檔案並重新執行 installer，不必改 PowerShell 程式碼。目前核准值為：
+
+IT 已指定 production host：
+
+```text
+IP:       192.168.0.18
+Prefix:   /22 (255.255.252.0)
+Gateway:  192.168.1.254
+URL:      http://192.168.0.18:8080
+```
+
+Bootstrap 與正式 installer 不再從 DHCP／VPN／測試網路 candidates 選 canonical address。正式寫入前必須確認 Windows 已有上述 IP、prefix 與 gateway；不符合就停止，且不自行修改 NIC、route 或 DNS。
+
+WDWELT 建立的 inbound rule 固定為 TCP `8080`、local `192.168.0.18`、remote `192.168.0.0/22`、Domain／Private profile，並阻擋 edge traversal。它不建立 port forwarding、UPnP、public tunnel、reverse proxy 或 MySQL LAN rule。`3306` 仍只監聽 localhost。
+
+目前只知道 `192.168.0.0/22` 已核准。若合法教師裝置位於其他 routed VLAN，這條規則會阻擋連線；必須由 IT 提供額外 CIDR／range，再以 installer 的 `-AllowedRemoteAddress` 明確加入。不可用 `Any`、`Internet` 或 `0.0.0.0/0` 代替。
+
+正式 runtime 只需要本機 Node.js、packaged `node_modules`、production files 與 localhost MySQL，不呼叫外部 API／CDN／updater。WinGet、Node/MySQL 下載與 npm registry 都只是 installation-time dependency；完全無外網部署方式與 offline cache 準備命令見 `install/README.md`。
+
 ## 日常命令
 
 ```powershell

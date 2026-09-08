@@ -2,10 +2,10 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from './mysql-driver.mjs';
-import { databaseConnectionOptions, loadDatabaseConfig } from './config.mjs';
+import mysql from '../core/mysql-driver.mjs';
+import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
 import { runMigrations } from './migrate.mjs';
-import { createTemporaryOptionFile } from './mysql-option-file.mjs';
+import { createTemporaryOptionFile } from '../core/mysql-option-file.mjs';
 
 const argument = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : null; };
 

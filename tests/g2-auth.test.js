@@ -9,7 +9,7 @@ import {
   sessionCookie,
   validatePassword,
   verifyPassword,
-} from '../g2/host/auth.mjs';
+} from '../server/app/auth.mjs';
 
 describe('G2 authentication primitives', () => {
   it('normalizes usernames consistently and accepts the pilot password 111', () => {

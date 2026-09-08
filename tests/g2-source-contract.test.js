@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 const source = (path) => readFileSync(resolve(path), 'utf8').replace(/^\uFEFF/, '');
+const sourcesUnder = (path) => readdirSync(resolve(path), { withFileTypes: true }).flatMap((entry) => {
+  const child = join(path, entry.name);
+  if (entry.isDirectory()) return sourcesUnder(child);
+  return /\.(?:html|mjs|ts)$/.test(entry.name) ? [source(child)] : [];
+});
 
 describe('G2 source-of-truth and secret boundaries', () => {
   it('keeps timetable and progress persistence out of localStorage', () => {
@@ -23,8 +28,23 @@ describe('G2 source-of-truth and secret boundaries', () => {
   });
 
   it('expands database-tool wildcards during installation', () => {
-    const manager = source('wdwelt.ps1');
+    const manager = source('install/wdwelt.ps1');
     expect(manager).not.toMatch(/Copy-Item\s+-LiteralPath\s+\(Join-Path\s+\$package\.Root\s+'db\\\*'\)/);
     expect(manager.match(/Copy-Item\s+-Path\s+\(Join-Path\s+\$package\.Root\s+'db\\\*'\)/g)).toHaveLength(2);
+  });
+
+  it('has no public tunnel, port-forwarding, or external runtime endpoint', () => {
+    const runtime = [
+      ...sourcesUnder('src'),
+      ...sourcesUnder('server/app'),
+      ...sourcesUnder('db/core'),
+      ...sourcesUnder('db/operations'),
+      source('index.html'),
+    ].join('\n');
+
+    expect(runtime).not.toMatch(/\b(?:cloudflare|ngrok|tailscale|funnel|upnp|portproxy|port\s*forward|reverse\s*proxy)\b/i);
+    expect(runtime).not.toMatch(/https?:\/\/(?!localhost\b|127\.0\.0\.1\b)/i);
+    expect(source('src/api.ts')).toContain('fetch(path');
+    expect(source('db/operations/bootstrap.mjs')).toContain("host: '127.0.0.1', port: 3306");
   });
 });

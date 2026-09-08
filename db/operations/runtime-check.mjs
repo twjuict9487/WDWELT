@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from './mysql-driver.mjs';
-import { databaseConnectionOptions, loadDatabaseConfig } from './config.mjs';
+import mysql from '../core/mysql-driver.mjs';
+import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
 
 const argument = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : null; };
 

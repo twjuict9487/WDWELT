@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import { databaseConnectionOptions } from '../../db/config.mjs';
+import { databaseConnectionOptions } from '../../db/core/config.mjs';
 
 const CONNECTION_ERROR_CODES = new Set([
   'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',

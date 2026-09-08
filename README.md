@@ -12,6 +12,9 @@
 | 主要測試尺寸 | iPhone 12 Safari，390 × 844 CSS pixels |
 | 使用範圍   | 校內區域網路                                |
 | 網頁服務   | TCP `8080`                            |
+| 正式網址   | `http://192.168.0.18:8080`            |
+| 校內網段   | `192.168.0.0/22`                      |
+| 環境設定   | `install/deployment.settings.json`    |
 | 正式資料   | MySQL `g2`                            |
 | 資料庫連線  | `127.0.0.1:3306`                      |
 | 時區     | `Asia/Taipei`                         |
@@ -55,11 +58,11 @@ MySQL 8.0
 * 已取得「今天上到哪」網址。
 * 已取得自己的帳號與密碼。
 
-管理人員提供的網址通常會類似：
+正式網址固定為：
 
-`http://192.168.1.50:8080/`
+`http://192.168.0.18:8080/`
 
-實際網址以學校提供的為準。
+不要改用當下 DHCP、VPN 或測試網路顯示的其他 IP。
 
 > **注意**
 >
@@ -304,6 +307,8 @@ G2 正式環境只需要一台普通 Windows PC／Laptop。
 * Docker
 * VM
 * reverse proxy
+* public port forwarding／UPnP
+* Cloudflare Tunnel／ngrok／Tailscale Funnel
 * cloud database
 * 第二個 API process
 
@@ -323,11 +328,30 @@ G2 正式環境只需要一台普通 Windows PC／Laptop。
 | MySQL   | `127.0.0.1:3306`         |
 | 認證資料    | 本機保存，不納入 Git             |
 
+### Repository 目錄
+
+```text
+config/             可提交的設定範例與開發設定
+db/core/            DB 連線、密碼與共用元件
+db/operations/      migration、backup、restore 等操作
+db/migrations/      版本化 SQL
+server/app/         Node host、API 與登入驗證
+scripts/build/      build 與 package 輔助程式
+install/            安裝說明、installer 與 Windows 維運 wrappers
+src/                瀏覽器端程式
+tests/integration/  DB、restore、lifecycle 與 soak tests
+runtime/            本機憑證、log、backup 與執行狀態；不納入 Git
+```
+
+Repository 根目錄只保留入口、套件設定與主要說明文件；產生物放在 `dist/`、`artifacts/`，兩者也不納入 Git。
+
 ---
 
 ## 3. 基本啟動流程
 
-在 repo 根目錄執行：
+全新 Windows 電腦可直接在檔案總管雙擊 [`install/START-WDWELT.cmd`](install/START-WDWELT.cmd)。它會從自身位置尋找 repository，自動檢查／安裝 prerequisites、準備 DB、測試、build、package，先 dry-run，再經確認正式安裝。需要人工處理的 UAC、MySQL 初次設定、root 密碼與多網卡選擇會在畫面中逐步提示；完整說明見 [`install/README.md`](install/README.md)。
+
+若只要在已具備 Node.js 與 MySQL 的開發電腦手動啟動，請在 repo 根目錄執行：
 
 ```powershell
 npm.cmd install
@@ -338,7 +362,7 @@ npm.cmd run host
 `npm.cmd run host` 實際執行：
 
 ```text
-node g2/host/server.mjs --config g2/config.development.json
+node server/app/server.mjs --config config/development.json
 ```
 
 ### 網址
@@ -347,7 +371,7 @@ node g2/host/server.mjs --config g2/config.development.json
 | ------ | -------------------------------- |
 | 主機本機   | `http://127.0.0.1:8080/`         |
 | 模擬前端時間 | `http://127.0.0.1:8080/?debug=1` |
-| 校內其他裝置 | `http://<主機區域網路 IPv4>:8080/`     |
+| 校內其他裝置 | `http://192.168.0.18:8080/`           |
 
 `?debug=1` 只控制前端模擬時間。
 
@@ -362,9 +386,11 @@ node g2/host/server.mjs --config g2/config.development.json
 
 ### 對教師裝置
 
-只需要開放：
+正式主機固定為 `192.168.0.18/22`，gateway `192.168.1.254`。只需要開放：
 
-**TCP `8080`**
+**來源 `192.168.0.0/22` → 目的 `192.168.0.18` TCP `8080`**
+
+不建立 port forwarding、UPnP、public tunnel 或 reverse proxy。若教師裝置來自其他校內 VLAN，目前會被 Firewall 擋下；只能等 IT 提供額外明確網段，不得改成 Internet／Any。
 
 ### 對 MySQL
 
@@ -504,12 +530,12 @@ npm.cmd test
 npm.cmd run typecheck
 npm.cmd run build
 
-npm.cmd run test:db -- --config .\g2\runtime\config\migration.database.json
-npm.cmd run test:restore -- --config .\g2\runtime\config\migration.database.json
+npm.cmd run test:db -- --config .\runtime\config\migration.database.json
+npm.cmd run test:restore -- --config .\runtime\config\migration.database.json
 
 npm.cmd run test:g2:lifecycle
 
-.\wdwelt.ps1 package -PackagePath .\artifacts\wdwelt-package
+.\install\wdwelt.ps1 package -PackagePath .\artifacts\wdwelt-package
 ```
 
 ### 資料庫測試限制
@@ -584,7 +610,7 @@ G2 對此資料採取以下處理：
 
 完整正式安裝流程：
 
-`INSTALLATION.md`
+[`install/README.md`](install/README.md) 提供從只有 VS Code、尚未安裝 Node.js／MySQL 開始的完整逐步指南。
 
 包含：
 
@@ -928,7 +954,7 @@ MySQL g2
 
 ### 文件開始形成
 
-* `INSTALLATION.md`
+* `install/README.md`（從零安裝、上線與故障排除）
 * `docs/G2-Windows-LAN-Host.md`
 
 WDWELT 開始從「專案」往「可以部署的軟體」移動。
@@ -977,7 +1003,7 @@ WDWELT 開始從「專案」往「可以部署的軟體」移動。
 
 ## 目前基礎驗證
 
-* **65 / 65 tests 通過**
+* **74 / 74 tests 通過**
 * **TypeScript 型別檢查通過**
 * **正式建置通過**
 
