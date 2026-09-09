@@ -1,10 +1,12 @@
 # WDWELT G2：從零開始的 Windows 安裝與上線指南
 
+**若另一台 Windows 10 已裝好 Node.js、MySQL，且 IT 已建立 G2 專用帳號：請先看 [既有環境快速安裝](EXISTING-ENVIRONMENT.md)，設定網路後執行 `npm.cmd run setup`。** 此模式使用既有帳號；以下 `START-WDWELT.cmd` 則適用於從零安裝及建立帳號。
+
 本文件寫給目前只有一台 Windows 10／11 電腦與 Visual Studio Code、沒有 Node.js、npm、MySQL、Git 或伺服器經驗的人。照順序完成後，這台電腦會成為固定 `192.168.0.18/22` 的 WDWELT 單機校內 LAN host，使用者以 Safari 開啟 `http://192.168.0.18:8080`。
 
 ## 先改唯一的環境設定檔
 
-所有會隨部署地點改變的網路值集中在 `install/deployment.settings.json`：
+所有會隨部署地點改變的網路值集中在 `config/deployment.json`：
 
 ```json
 {
@@ -19,7 +21,7 @@
 
 換環境時只改這個檔案，再執行 `install/START-WDWELT.cmd`。Bootstrap、installer、Firewall 與 production package 都讀同一份設定。設定檔只接受一致的 RFC1918 private IPv4 網路，並拒絕 `Any`、`Internet`、`LocalSubnet` 和 `0.0.0.0/0`。
 
-`8080`、MySQL `127.0.0.1:3306`、禁止 public tunnel，以及 Browser → Node → MySQL 的架構是安全規則，不是環境變數；不要放進設定檔放寬。
+`8080`、MySQL classic／X Protocol 只綁定 localhost、禁止 public tunnel，以及 Browser → Node → MySQL 的架構是安全規則，不是環境變數；不要放進設定檔放寬。
 
 本文件後面的 IP 範例皆對應目前提交的 `school-production` 設定。
 
@@ -40,14 +42,20 @@ START-WDWELT.cmd
 1. 顯示完整計畫，並要求 Windows UAC 的 Administrator 權限。
 2. 偵測 Node.js；缺少時透過 Windows WinGet 安裝官方 Node.js LTS。
 3. 偵測 MySQL Server 8.x、MySQL Windows service、`mysql.exe` 與 `mysqldump.exe`。
-4. 備份 `my.ini`，把 MySQL 限制為只監聽 `127.0.0.1`；套用失敗會還原備份。
+4. 備份 `my.ini`，把 MySQL classic protocol 與 X Protocol 都限制為只監聽 `127.0.0.1`；套用失敗會還原備份。
 5. 以隱藏輸入要求 MySQL `root` 密碼；密碼不會放進 process command line 或 bootstrap log。
 6. 建立 `g2` database、受 ACL 保護的 administrative credential，以及最小權限 runtime account。
-7. 執行 `npm install`、DB preflight、backup、migration、runtime check、測試、typecheck 與 production build。
+7. 執行鎖版的 `npm ci`、DB preflight、backup、migration、runtime check 與 production build；預設略過開發測試以加快部署。
 8. 建立 production package。
 9. 驗證 Windows 已由 IT 配置 `192.168.0.18/22` 與 gateway `192.168.1.254`；不使用 DHCP／VPN／測試網路位址，也不自行修改 NIC。
 10. 先執行不寫入系統的 installer dry-run，列出 PC／iPhone URL，再要求最後一次確認。
 11. 正式建立 WDWELT 安裝目錄、Task Scheduler tasks 與只允許來源 `192.168.0.0/22`、目的地 `192.168.0.18:8080` 的 firewall rule，啟動並驗證服務。
+
+平常直接雙擊即可走快速 production install。若要在安裝前額外執行完整 unit、typecheck 與隔離式 DB tests，改在 PowerShell 執行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install\bootstrap.ps1 -FullValidation
+```
 
 任何步驟失敗都會停止，不會顯示「安裝成功」。已完成且安全重跑的步驟可以保留，所以排除問題後可再次雙擊同一個檔案。執行紀錄位於 repository 的 `runtime\logs\bootstrap-日期時間.log`；該目錄不會上傳 Git。
 
@@ -577,12 +585,12 @@ npm.cmd list --depth=0
 ## 17. 建立 administrative database config
 
 ```powershell
-New-Item -ItemType Directory -Force .\runtime\config | Out-Null
-Copy-Item .\config\database.admin.example.json .\runtime\config\migration.database.json
-code .\runtime\config\migration.database.json
+New-Item -ItemType Directory -Force .\config\local | Out-Null
+Copy-Item .\config\database.admin.example.json .\config\local\database.admin.json
+code .\config\local\database.admin.json
 ```
 
-如果 `code` command 不存在，直接在 VS Code Explorer 展開 `runtime → config`，點選 `migration.database.json`。
+如果 `code` command 不存在，直接在 VS Code Explorer 展開 `config → local`，點選 `database.admin.json`。
 
 把：
 
@@ -610,14 +618,14 @@ Test-Path 'C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe'
 
 重要：
 
-- `runtime/` 已被 `.gitignore` 整體忽略。
+- `config/local/` 已被 `.gitignore` 忽略；這裡只放本機 credential，不會進 Git。
 - 仍然不要把 credential file 傳給別人、貼到 issue 或截圖。
-- 不要把 root password 放進 `config/`、`src/`、`README.md` 或任何會 commit 的檔案。
+- 不要把 root password 放進 `config/local/` 以外的 `config/`、`src/`、`README.md` 或任何會 commit 的檔案。
 
 ## 18. 執行只讀 preflight
 
 ```powershell
-npm.cmd run db:preflight -- --config .\runtime\config\migration.database.json
+npm.cmd run db:preflight -- --config .\config\local\database.admin.json
 ```
 
 Preflight 會檢查：
@@ -625,7 +633,7 @@ Preflight 會檢查：
 - 實際連到 `g2`。
 - MySQL version。
 - current MySQL user 與 grants。
-- `bind_address`。
+- `bind_address` 與 `mysqlx_bind_address`。
 - 目前 tables。
 - 若 `users` 已存在，顯示 schema 與 row count。
 - 是否已有 `wdwelt_app` account。
@@ -643,7 +651,7 @@ Preflight 會檢查：
 
 ```powershell
 node .\db\operations\backup.mjs `
-  --config .\runtime\config\migration.database.json `
+  --config .\config\local\database.admin.json `
   --output .\runtime\backups `
   --label pre-migration
 ```
@@ -657,7 +665,7 @@ Get-ChildItem .\runtime\backups\*.sql | Sort-Object LastWriteTime -Descending | 
 然後執行 migration：
 
 ```powershell
-npm.cmd run db:migrate -- --config .\runtime\config\migration.database.json
+npm.cmd run db:migrate -- --config .\config\local\database.admin.json
 ```
 
 Migration 會：
@@ -677,8 +685,8 @@ Migration 會：
 
 ```powershell
 node .\db\operations\bootstrap.mjs `
-  --admin-config .\runtime\config\migration.database.json `
-  --runtime-config .\runtime\config\database.local.json
+  --admin-config .\config\local\database.admin.json `
+  --runtime-config .\config\local\database.runtime.json
 ```
 
 這一步會：
@@ -686,7 +694,7 @@ node .\db\operations\bootstrap.mjs `
 - 產生一個隨機 runtime password。
 - 建立 `wdwelt_app@localhost`。
 - 只授予 `g2.*` 的 `SELECT, INSERT, UPDATE, DELETE`。
-- 建立 `runtime/config/database.local.json`。
+- 建立 `config/local/database.runtime.json`。
 - 在 Windows 套用 credential ACL。
 
 不要手動把 runtime account 改成 `%` host，不要授予 `GRANT OPTION`、`CREATE USER` 或全域管理權限。
@@ -694,7 +702,7 @@ node .\db\operations\bootstrap.mjs `
 確認 runtime connection：
 
 ```powershell
-node .\db\operations\runtime-check.mjs --config .\runtime\config\database.local.json
+node .\db\operations\runtime-check.mjs --config .\config\local\database.runtime.json
 ```
 
 預期輸出包含：
@@ -706,7 +714,7 @@ node .\db\operations\runtime-check.mjs --config .\runtime\config\database.local.
 再次執行 preflight，這次應看到六個 application／migration tables：
 
 ```powershell
-npm.cmd run db:preflight -- --config .\runtime\config\migration.database.json
+npm.cmd run db:preflight -- --config .\config\local\database.admin.json
 ```
 
 ---
@@ -732,8 +740,8 @@ dist\build-metadata.json
 可再執行隔離式 database tests：
 
 ```powershell
-npm.cmd run test:db -- --config .\runtime\config\migration.database.json
-npm.cmd run test:restore -- --config .\runtime\config\migration.database.json
+npm.cmd run test:db -- --config .\config\local\database.admin.json
+npm.cmd run test:restore -- --config .\config\local\database.admin.json
 ```
 
 這兩個測試使用名稱以 `wdwelt_test_` 開頭的臨時 databases，完成後刪除。不要自行把測試程式的 database name 改成 `g2`。
@@ -761,7 +769,7 @@ http://127.0.0.1:8080/
 
 測試建立帳號、登入、設定課表與儲存進度。結束本機試跑時，回到執行 host 的 terminal 按 `Ctrl+C`。
 
-`127.0.0.1` 只代表「目前這一台裝置自己」。它可供 Windows PC 測試，但 iPhone 不可使用這個地址。
+這一節啟動的是 repository 的 development config，所以只監聽 `127.0.0.1`。正式安裝則只監聽 `config/deployment.json` 的 `hostAddress`，Windows PC 與 iPhone 都使用該 LAN URL。
 
 ---
 
@@ -890,8 +898,8 @@ artifacts\wdwelt-package\
 ```powershell
 $lanIp = '192.168.0.18'
 $nodePath = (Get-Command node).Source
-$runtimeDb = (Resolve-Path .\runtime\config\database.local.json).Path
-$adminDb = (Resolve-Path .\runtime\config\migration.database.json).Path
+$runtimeDb = (Resolve-Path .\config\local\database.runtime.json).Path
+$adminDb = (Resolve-Path .\config\local\database.admin.json).Path
 $packageTool = (Resolve-Path .\artifacts\wdwelt-package\tools\wdwelt.ps1).Path
 
 $lanIp
@@ -936,8 +944,8 @@ Set-Location -LiteralPath 'C:\Users\你的Windows帳號\Documents\WDWELT'
 
 $lanIp = '192.168.0.18'
 $nodePath = (Get-Command node).Source
-$runtimeDb = (Resolve-Path .\runtime\config\database.local.json).Path
-$adminDb = (Resolve-Path .\runtime\config\migration.database.json).Path
+$runtimeDb = (Resolve-Path .\config\local\database.runtime.json).Path
+$adminDb = (Resolve-Path .\config\local\database.admin.json).Path
 $packageTool = (Resolve-Path .\artifacts\wdwelt-package\tools\wdwelt.ps1).Path
 ```
 
@@ -1002,6 +1010,7 @@ Installer 會依序：
 ```powershell
 $tool = 'C:\ProgramData\WDWELT\tools\wdwelt.ps1'
 $config = 'C:\ProgramData\WDWELT\config\wdwelt.json'
+$installed = Get-Content -Raw -Encoding UTF8 $config | ConvertFrom-Json
 ```
 
 ## 31. 驗證 process、health、network 與 tasks
@@ -1015,8 +1024,8 @@ $config = 'C:\ProgramData\WDWELT\config\wdwelt.json'
 本機 HTTP 驗證：
 
 ```powershell
-Invoke-WebRequest http://127.0.0.1:8080/health/live | Select-Object StatusCode,Content
-Invoke-WebRequest http://127.0.0.1:8080/health/ready | Select-Object StatusCode,Content
+Invoke-WebRequest "$($installed.canonicalUrl)/health/live" | Select-Object StatusCode,Content
+Invoke-WebRequest "$($installed.canonicalUrl)/health/ready" | Select-Object StatusCode,Content
 ```
 
 兩者都要回傳 `200`。`/health/live` 表示 Node process 有回應；`/health/ready` 表示 Node 與 MySQL 都可以服務。
@@ -1187,7 +1196,7 @@ Terminal 不在 repository root；用 `Set-Location -LiteralPath '正確路徑'`
 ## MySQL `Access denied for user 'root'@'localhost'`
 
 - 檢查輸入的是 MySQL root 密碼，不是 Windows 密碼。
-- 檢查 `runtime/config/migration.database.json` 的 password。
+- 檢查 `config/local/database.admin.json` 的 password。
 - 若密碼含 `"` 或 `\`，確認 JSON escape 正確。
 - 不要把密碼加在 `mysql -p密碼` command line。
 
@@ -1235,7 +1244,7 @@ WDWELT 不會停止不屬於自己的 process，也不會偷偷改用 8081。先
 
 這是安全限制。先請網管確認網路應設為 Private／Domain。`-AllowPublicProfile` 不是一般排錯捷徑。
 
-## `database.local.json` 不見，但 `wdwelt_app` 已存在
+## `database.runtime.json` 不見，但 `wdwelt_app` 已存在
 
 Bootstrap 會拒絕自行重設已存在 account 的密碼。先從安全 backup 還原 runtime config；沒有 backup 時由資料庫管理者明確處理 account。
 
@@ -1263,7 +1272,7 @@ Bootstrap 會拒絕自行重設已存在 account 的密碼。先從安全 backup
 
 - [ ] `node --version` 與 `npm.cmd --version` 正常。
 - [ ] `MySQL80` Running／Automatic。
-- [ ] `3306` 只 listen 在 localhost。
+- [ ] MySQL classic protocol `3306` 與 X Protocol 都只 listen 在 localhost。
 - [ ] `g2` database 存在。
 - [ ] Migration 完成且六個 tables 存在。
 - [ ] `wdwelt_app@localhost` 僅有 CRUD grants。

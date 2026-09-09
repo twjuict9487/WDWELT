@@ -47,23 +47,25 @@ function Get-DeploymentPrivateMinimumPrefix([Net.IPAddress]$Address) {
 
 function Read-DeploymentSettings {
   if([string]::IsNullOrWhiteSpace($DeploymentSettingsPath)){
-    $sourceSettings=Join-Path $SourceRoot 'install\deployment.settings.json';$packagedSettings=Join-Path $ScriptRoot 'deployment.settings.json'
+    $sourceSettings=Join-Path $SourceRoot 'config\deployment.json';$packagedSettings=Join-Path $ScriptRoot 'deployment.json'
     $resolved=if(Test-Path -LiteralPath $sourceSettings -PathType Leaf){$sourceSettings}else{$packagedSettings}
   }else{$resolved=Resolve-InputPath $DeploymentSettingsPath}
   if(-not(Test-Path -LiteralPath $resolved -PathType Leaf)){throw "找不到 deployment settings：$resolved"}
   try{$settings=Get-Content -Raw -Encoding UTF8 -LiteralPath $resolved|ConvertFrom-Json}catch{throw "deployment settings JSON 無法解析：$resolved"}
   if([int]$settings.schemaVersion-ne1-or[string]::IsNullOrWhiteSpace([string]$settings.environmentName)){throw 'deployment settings schemaVersion/environmentName 不合法。'}
   $hostAddress=$null;$gateway=$null
-  if(-not[Net.IPAddress]::TryParse([string]$settings.hostAddress,[ref]$hostAddress)-or-not(Get-DeploymentPrivateMinimumPrefix $hostAddress)){throw 'hostAddress 必須是 private IPv4。'}
-  if(-not[Net.IPAddress]::TryParse([string]$settings.defaultGateway,[ref]$gateway)-or-not(Get-DeploymentPrivateMinimumPrefix $gateway)){throw 'defaultGateway 必須是 private IPv4。'}
+  if(-not[Net.IPAddress]::TryParse([string]$settings.hostAddress,[ref]$hostAddress)-or$hostAddress.AddressFamily-ne[Net.Sockets.AddressFamily]::InterNetwork-or-not(Get-DeploymentPrivateMinimumPrefix $hostAddress)){throw 'hostAddress 必須是 private IPv4。'}
+  if(-not[Net.IPAddress]::TryParse([string]$settings.defaultGateway,[ref]$gateway)-or$gateway.AddressFamily-ne[Net.Sockets.AddressFamily]::InterNetwork-or-not(Get-DeploymentPrivateMinimumPrefix $gateway)){throw 'defaultGateway 必須是 private IPv4。'}
   if([string]$settings.subnetCidr-notmatch'^(.+)/(\d{1,2})$'){throw 'subnetCidr 必須是 IPv4 CIDR。'}
   $subnet=$null;$prefix=[int]$Matches[2]
-  if(-not[Net.IPAddress]::TryParse($Matches[1],[ref]$subnet)-or$prefix-lt1-or$prefix-gt32){throw 'subnetCidr 必須是 IPv4 CIDR。'}
+  if(-not[Net.IPAddress]::TryParse($Matches[1],[ref]$subnet)-or$subnet.AddressFamily-ne[Net.Sockets.AddressFamily]::InterNetwork-or$prefix-lt1-or$prefix-gt30){throw 'subnetCidr 必須是可配置 host/gateway 的 IPv4 CIDR（prefix 1..30）。'}
   $minimum=Get-DeploymentPrivateMinimumPrefix $subnet
   if(-not$minimum-or$prefix-lt$minimum){throw 'subnetCidr 必須完整位於 RFC1918 private range。'}
   $mask=[uint64]([Math]::Pow(2,32)-[Math]::Pow(2,32-$prefix));$network=(Convert-DeploymentIPv4ToNumber $subnet)-band$mask
   if((Convert-DeploymentIPv4ToNumber $subnet)-ne$network){throw 'subnetCidr 必須使用 network address。'}
   if(((Convert-DeploymentIPv4ToNumber $hostAddress)-band$mask)-ne$network-or((Convert-DeploymentIPv4ToNumber $gateway)-band$mask)-ne$network){throw 'hostAddress 與 defaultGateway 必須位於 subnetCidr。'}
+  $broadcast=$network+[uint64]([Math]::Pow(2,32-$prefix)-1);$hostNumber=Convert-DeploymentIPv4ToNumber $hostAddress;$gatewayNumber=Convert-DeploymentIPv4ToNumber $gateway
+  if($hostNumber-in@($network,$broadcast)-or$gatewayNumber-in@($network,$broadcast)){throw 'hostAddress/defaultGateway 不可使用 network 或 broadcast address。'}
   $allowed=@($settings.allowedClientRanges|ForEach-Object{([string]$_).Trim()}|Where-Object{$_})
   if(-not$allowed.Count){throw 'allowedClientRanges 不可為空。'}
   return [pscustomobject]@{Path=[IO.Path]::GetFullPath($resolved);EnvironmentName=[string]$settings.environmentName;HostAddress=$hostAddress.IPAddressToString;SubnetCidr=[string]$settings.subnetCidr;PrefixLength=$prefix;DefaultGateway=$gateway.IPAddressToString;AllowedClientRanges=$allowed}
@@ -134,8 +136,9 @@ function Read-WdweltConfig {
   } else { $config | Add-Member -NotePropertyName allowedRemoteAddresses -NotePropertyValue @($remoteProperty.Value) -Force }
   if ([string]$config.networkPolicy -in @('school-fixed-v1','deployment-settings-v1') -and $Command -ne 'install') {
     if ([string]$config.canonicalHost -ne $ProductionCanonicalHost -or [int]$config.networkPrefixLength -ne $ProductionPrefixLength -or [string]$config.networkGateway -ne $ProductionGateway) {
-      throw 'Installed network policy 與 deployment.settings.json 不一致；請重新執行 install 更新環境設定。'
+      throw 'Installed network policy 與 config/deployment.json 不一致；請重新執行 install 更新環境設定。'
     }
+    if ([string]$config.bindAddress -ne [string]$config.canonicalHost) { throw 'Production Node 必須只監聽 canonicalHost；請重新執行 install 更新設定。' }
   }
   foreach ($name in @('databaseConfigPath','adminDatabaseConfigPath')) {
     if ($config.$name) { $config.$name = Resolve-ConfiguredPath ([string]$config.$name) }
@@ -244,6 +247,8 @@ function Assert-AllowedRemoteAddresses([string[]]$Addresses, [switch]$AllowLocal
       }
       $privateClass = Get-PrivateIPv4Class $address
       if (-not $privateClass -or [int]$Matches[2] -lt [int]$privateClass.MinimumPrefix) { throw "Firewall remote CIDR 必須完整位於 RFC1918 private range：$value" }
+      $prefix=[int]$Matches[2];$mask=[uint64]([Math]::Pow(2,32)-[Math]::Pow(2,32-$prefix))
+      if(((Convert-IPv4ToNumber $address)-band$mask)-ne(Convert-IPv4ToNumber $address)){throw "Firewall remote CIDR 必須使用 network address：$value"}
       continue
     }
     if ($value -match '^([^-]+)-([^-]+)$') {
@@ -344,7 +349,8 @@ function Release-MaintenanceLock { Remove-Item -LiteralPath $LockFile -Force -Er
 
 function Invoke-HealthEndpoint([string]$Endpoint,[int]$TimeoutSeconds = [int]$Config.healthTimeoutSeconds) {
   try {
-    $result = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8080$Endpoint" -TimeoutSec $TimeoutSeconds
+    $healthAddress = if ([string]$Config.bindAddress -in @('0.0.0.0','::','*','')) { '127.0.0.1' } else { [string]$Config.bindAddress }
+    $result = Invoke-RestMethod -Method Get -Uri "http://${healthAddress}:8080$Endpoint" -TimeoutSec $TimeoutSeconds
     if (-not $result.version -or -not $result.build) { throw 'health response 缺少必要欄位' }
     return $result
   } catch { return $null }
@@ -454,7 +460,7 @@ function Start-Wdwelt {
       Write-OperationLog info start "Liveness verified for PID $($process.Id)."
       $ready = Invoke-ReadyHealth 2
       if (-not $ready -and (Test-DatabaseConfigured)) { Write-Warning 'Node 已啟動，但 MySQL 尚未 ready；API 暫時回傳 503，host 會繼續重連。' }
-      Write-Host "啟動完成：http://127.0.0.1:8080 ($($live.version) build $($live.build))"
+      Write-Host "啟動完成：$($Config.canonicalUrl) ($($live.version) build $($live.build))"
       return
     }
   }
@@ -595,6 +601,7 @@ function Test-Network {
   $verifiedHost = Get-VerifiedHost
   $candidateAddresses=@($candidates|ForEach-Object Address)
   $canonicalIsLocal = $Config.canonicalHost -in @('127.0.0.1','localhost') -or $Config.canonicalHost -in $candidateAddresses
+  $listenerMatches = $owner -and [string]$owner.Address -eq [string]$Config.bindAddress
   $expectedRemote = @(Assert-AllowedRemoteAddresses @($Config.allowedRemoteAddresses) -AllowLocalSubnet:([string]$Config.canonicalHost -ne $ProductionCanonicalHost))
   $actualRemote = @($addressFilters | ForEach-Object RemoteAddress | ForEach-Object { $_ } | Sort-Object -Unique)
   $actualLocal = @($addressFilters | ForEach-Object LocalAddress | ForEach-Object { $_ } | Sort-Object -Unique)
@@ -602,24 +609,33 @@ function Test-Network {
   $localMatches = $actualLocal.Count -eq 1 -and $actualLocal[0] -eq [string]$Config.canonicalHost
   $portMatches = $portFilters.Count -eq 1 -and [string]$portFilters[0].Protocol -in @('TCP','6') -and [string]$portFilters[0].LocalPort -eq '8080'
   $firewallEnabled = $firewall.Count -eq 1 -and [string]$firewall[0].Enabled -eq 'True'
-  $ruleMatches = $firewall.Count -eq 1 -and [string]$firewall[0].Direction -eq 'Inbound' -and [string]$firewall[0].Action -eq 'Allow' -and [string]$firewall[0].EdgeTraversalPolicy -eq 'Block'
+  $firewallProfiles=if($firewall.Count){[string]$firewall[0].Profile}else{''}
+  $profileMatches=$firewallProfiles -notmatch 'Any' -and $firewallProfiles -match 'Domain' -and $firewallProfiles -match 'Private'
+  $ruleMatches = $firewall.Count -eq 1 -and [string]$firewall[0].Direction -eq 'Inbound' -and [string]$firewall[0].Action -eq 'Allow' -and [string]$firewall[0].EdgeTraversalPolicy -eq 'Block' -and $profileMatches
   $firewallCorrect = $firewallEnabled -and $ruleMatches -and $remoteMatches -and $localMatches -and $portMatches
   Write-Host "LAN IPv4 candidates: $(if($candidates){$candidateAddresses -join ', '}else{'無法確認'})"
   if ($candidates.Count -gt 1 -or ($candidates | Where-Object Virtual)) { Write-Warning '偵測到多網卡、VPN 或虛擬網卡；canonical host 必須人工確認。' }
   if (-not $canonicalIsLocal) { Write-Warning "canonical host $($Config.canonicalHost) 不在目前 LAN IPv4 candidates。" }
-  Write-Host "Port 8080: $(if($owner){"listening PID $($owner.PID) $($owner.Name)"}else{'not listening'})"
+  Write-Host "Port 8080: $(if($owner){"listening on $($owner.Address), PID $($owner.PID) $($owner.Name)"}else{'not listening'})"
+  Write-Host "Listener address matches config: $([bool]$listenerMatches)"
   Write-Host "Port owner verified as WDWELT: $([bool]$verifiedHost)"
-  Write-Host "Localhost liveness: $(if($live){'ok'}else{'failed'})"
+  Write-Host "Configured-address liveness: $(if($live){'ok'}else{'failed'})"
   Write-Host "Database readiness: $(if($ready){'ok'}else{'unavailable'})"
   Write-Host "Windows profiles: $(if($profiles){($profiles.NetworkCategory -join ', ')}else{'無法確認'})"
   Write-Host "Firewall rule: $(if($firewall.Count){$firewall[0].Enabled}else{'not installed'})"
+  Write-Host "Firewall profiles: $(if($firewallProfiles){$firewallProfiles}else{'無法確認'})"
   Write-Host "Firewall local address: $(if($actualLocal.Count){$actualLocal -join ', '}else{'無法確認'})"
   Write-Host "Firewall allowed remote addresses: $(if($actualRemote.Count){$actualRemote -join ', '}else{'無法確認'})"
   Write-Host "Firewall scope verified: $firewallCorrect"
   if ($Config.canonicalHost -notmatch '^\d+\.\d+\.\d+\.\d+$') { try { Write-Host "Hostname resolution: $([Net.Dns]::GetHostAddresses($Config.canonicalHost) -join ', ')" } catch { Write-Warning 'Hostname 無法解析。' } }
   Write-Host "Canonical URL: $($Config.canonicalUrl)"
-  if ($live -and $verifiedHost) { Write-Host '本機 WDWELT Node 正常。' }
-  if ([string]$Config.networkPolicy -in @('school-fixed-v1','deployment-settings-v1')) { Write-Host "目前允許範圍：$($expectedRemote -join ', ')；其他校內 VLAN 需由 IT 加入 deployment settings。" }
+  if ($live -and $verifiedHost -and $listenerMatches) { Write-Host '本機 WDWELT Node 正常，且監聽位址符合設定。' }
+  if ([string]$Config.networkPolicy -in @('school-fixed-v1','deployment-settings-v1')) {
+    Write-Host "目前允許範圍：$($expectedRemote -join ', ')；其他校內 VLAN 需由 IT 加入 deployment settings。"
+    if(-not $canonicalIsLocal -or -not $listenerMatches -or -not $verifiedHost -or -not $live -or -not $ready -or -not $firewallCorrect){
+      throw 'Production network verification failed：canonical IP、exact listener、WDWELT process、live/ready 與 firewall scope 必須全部正確。'
+    }
+  }
   if ($live -and $ready -and $verifiedHost -and $canonicalIsLocal -and $firewallCorrect) { Write-Host '本機 LAN 與資料庫設定看起來可用。' }
   else { Write-Host '本機 LAN 設定尚有警告或無法確認。' }
   Write-Host '另一台裝置實際連線尚未驗證；請用同一 LAN 的手機或電腦開啟 canonical URL。'
@@ -679,11 +695,21 @@ function Install-Firewall {
   if (-not $DryRun -and [string]$Config.canonicalHost -eq $ProductionCanonicalHost) { Assert-ProductionNetwork | Out-Null }
   $canonicalIp = Get-NetIPAddress -AddressFamily IPv4 -IPAddress ([string]$Config.canonicalHost) -ErrorAction SilentlyContinue | Select-Object -First 1
   $profiles = if ($canonicalIp) { Get-NetConnectionProfile -InterfaceIndex $canonicalIp.InterfaceIndex -ErrorAction SilentlyContinue } else { @() }
+  if (-not $DryRun -and -not $canonicalIp) { throw '無法確認 canonical host 所在的 Windows network interface；未建立 Firewall rule。' }
+  if (-not $DryRun -and -not @($profiles).Count) { throw '無法確認 canonical host 的 Windows network profile；未建立 Firewall rule。' }
   if (($profiles.NetworkCategory -contains 'Public') -and -not $AllowPublicProfile) { throw '目前包含 Public network profile；需明確指定 -AllowPublicProfile 才會建立規則。' }
   if ($DryRun) { Write-Host "[DRY-RUN] Ensure firewall rule WDWELT LAN TCP 8080; local=$($Config.canonicalHost); remote=$($remoteAddresses -join ','); TCP 8080; Private/Domain$(if($AllowPublicProfile){'/Public'})."; return }
   Get-NetFirewallRule -DisplayName 'WDWELT LAN TCP 8080' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
   $firewallProfiles = if($AllowPublicProfile){'Private','Domain','Public'}else{'Private','Domain'}
-  New-NetFirewallRule -DisplayName 'WDWELT LAN TCP 8080' -Direction Inbound -Protocol TCP -LocalPort 8080 -LocalAddress ([string]$Config.canonicalHost) -RemoteAddress $remoteAddresses -Profile $firewallProfiles -EdgeTraversalPolicy Block -Action Allow | Out-Null
+  $createdRule = New-NetFirewallRule -DisplayName 'WDWELT LAN TCP 8080' -Direction Inbound -Protocol TCP -LocalPort 8080 -LocalAddress ([string]$Config.canonicalHost) -RemoteAddress $remoteAddresses -Profile $firewallProfiles -EdgeTraversalPolicy Block -Action Allow
+  $createdAddress = @($createdRule | Get-NetFirewallAddressFilter); $createdPort = @($createdRule | Get-NetFirewallPortFilter)
+  $actualRemote = @($createdAddress | ForEach-Object RemoteAddress | Sort-Object -Unique)
+  $createdProfiles=[string]$createdRule.Profile
+  $createdProfilesMatch=$createdProfiles -notmatch 'Any' -and $createdProfiles -match 'Domain' -and $createdProfiles -match 'Private' -and ([bool]($createdProfiles -match 'Public') -eq [bool]$AllowPublicProfile)
+  $scopeMatches = $createdAddress.Count -eq 1 -and [string]$createdAddress[0].LocalAddress -eq [string]$Config.canonicalHost -and
+    $actualRemote.Count -eq $remoteAddresses.Count -and -not @(Compare-Object ($remoteAddresses | Sort-Object -Unique) $actualRemote).Count -and
+    $createdPort.Count -eq 1 -and [string]$createdPort[0].Protocol -in @('TCP','6') -and [string]$createdPort[0].LocalPort -eq '8080' -and $createdProfilesMatch
+  if (-not $scopeMatches) { $createdRule | Remove-NetFirewallRule; throw 'Firewall rule 建立後驗證失敗；已移除規則。' }
 }
 
 function Invoke-Package {
@@ -712,7 +738,7 @@ function Invoke-Package {
   Copy-Item (Join-Path $SourceRoot 'install\windows\backup.ps1') (Join-Path $output 'tools\database\backup.ps1')
   Copy-Item (Join-Path $SourceRoot 'install\windows\restore.ps1') (Join-Path $output 'tools\database\restore.ps1')
   Copy-Item $PSCommandPath (Join-Path $output 'tools\wdwelt.ps1')
-  Copy-Item -LiteralPath $DeploymentSettingsPath -Destination (Join-Path $output 'tools\deployment.settings.json')
+  Copy-Item -LiteralPath $DeploymentSettingsPath -Destination (Join-Path $output 'tools\deployment.json')
   $nodeForPackage=(Get-Command node -ErrorAction Stop).Source
   & $nodeForPackage (Join-Path $SourceRoot 'scripts\build\copy-production-dependencies.mjs') $SourceRoot (Join-Path $output 'host\node_modules')
   if($LASTEXITCODE-ne0){throw 'Production dependency packaging failed.'}
@@ -735,7 +761,7 @@ function Validate-Package([string]$Path) {
   if($reparsePoints.Count){throw 'Package 不可包含 symlink／junction／reparse point。'}
   $release=Read-Release $productionRoot
   if($manifest.version -ne $release.version -or $manifest.build -ne $release.build){throw 'Package manifest 與 build metadata 不一致。'}
-  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'deployment.settings.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
+  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Package 缺少必要檔案：$required" }
   }
   $manifestFiles=@($manifest.files)
@@ -783,6 +809,13 @@ function Copy-FileAtomically([string]$Source,[string]$Destination) {
   finally{Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue}
 }
 
+function Remove-LegacyInstalledCredentials {
+  foreach($legacyName in @('database.json','migration.database.json')){
+    $legacyPath=Join-Path $InstallPath "config\$legacyName"
+    if(Test-Path -LiteralPath $legacyPath -PathType Leaf){Remove-Item -LiteralPath $legacyPath -Force}
+  }
+}
+
 function Assert-MySqlPrerequisites([string]$ServiceName,[string]$NodeExecutable,[string]$AdminConfig,[string]$RuntimeConfig,[string]$DatabaseToolRoot) {
   $service=Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
   if(-not $service){throw "找不到既有 MySQL Windows service：$ServiceName。WDWELT 不會安裝 MySQL。"}
@@ -793,6 +826,8 @@ function Assert-MySqlPrerequisites([string]$ServiceName,[string]$NodeExecutable,
   if([string]$preflight.database[0].value-ne'g2'){throw 'Administrative database config 必須連到既有 g2 database。'}
   $bind=[string]$preflight.bindAddress[0].Value
   if($bind-notin @('127.0.0.1','localhost','::1')){throw "MySQL bind_address 必須限制為 localhost，目前為 $bind。未開放 3306。"}
+  $mysqlxRows=@($preflight.mysqlxBindAddress)
+  if($mysqlxRows.Count -and [string]$mysqlxRows[0].Value -notin @('127.0.0.1','localhost','::1')){throw "MySQL mysqlx_bind_address 必須限制為 localhost，目前為 $([string]$mysqlxRows[0].Value)。未開放 X Protocol。"}
   $runtimeText=& $NodeExecutable (Join-Path $DatabaseToolRoot 'operations\runtime-check.mjs') --config $RuntimeConfig
   if($LASTEXITCODE-ne0){throw 'wdwelt_app runtime database check failed.'}
   try{$runtimeCheck=($runtimeText -join "`n")|ConvertFrom-Json}catch{throw 'Runtime database check output 無法驗證。'}
@@ -837,14 +872,14 @@ function Invoke-Install {
   $productionNetwork = Assert-ProductionNetwork
   Assert-MySqlPrerequisites $MySqlServiceName $nodeExecutable $adminCredentialSource $runtimeCredentialSource (Join-Path $package.Root 'db')
   foreach($dir in @('config','logs','run','backups','tools','db')){[IO.Directory]::CreateDirectory((Join-Path $InstallPath $dir))|Out-Null}
-  $installedRuntimeCredential=Join-Path $InstallPath 'config\database.json'
-  $installedAdminCredential=Join-Path $InstallPath 'config\migration.database.json'
+  $installedRuntimeCredential=Join-Path $InstallPath 'config\database.runtime.json'
+  $installedAdminCredential=Join-Path $InstallPath 'config\database.admin.json'
   if(-not $runtimeCredentialSource.Equals($installedRuntimeCredential,[StringComparison]::OrdinalIgnoreCase)){Copy-ProtectedCredential $runtimeCredentialSource $installedRuntimeCredential}
   if(-not $adminCredentialSource.Equals($installedAdminCredential,[StringComparison]::OrdinalIgnoreCase)){Copy-ProtectedCredential $adminCredentialSource $installedAdminCredential}
   $databasePrepared=$false
   if($existingInstall){
     $savedConfig=Get-Content -Raw -Encoding UTF8 -LiteralPath $installedConfig|ConvertFrom-Json
-    foreach($property in @{backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080"}.GetEnumerator()){
+    foreach($property in @{backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;bindAddress=$chosen;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080"}.GetEnumerator()){
       $savedConfig|Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value -Force
       $Config|Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value -Force
     }
@@ -873,21 +908,25 @@ function Invoke-Install {
     Copy-Item -LiteralPath (Join-Path $package.Root 'host') -Destination $hostCurrent -Recurse
     Copy-Item -Path (Join-Path $package.Root 'db\*') -Destination (Join-Path $InstallPath 'db') -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $package.Root 'tools\database') -Destination (Join-Path $InstallPath 'tools\database') -Recurse -Force
-    $installed=[ordered]@{port=8080;bindAddress='0.0.0.0';canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080";networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;installPath=$InstallPath;currentPath=$current;logPath=(Join-Path $InstallPath 'logs');runPath=(Join-Path $InstallPath 'run');backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;healthIntervalSeconds=60;healthTimeoutSeconds=5;healthFailureThreshold=3;recoveryCooldownSeconds=120;maintenanceLockMinutes=15;logRetentionDays=14;logMaxBytes=5000000}
+    $installed=[ordered]@{port=8080;bindAddress=$chosen;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080";networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;installPath=$InstallPath;currentPath=$current;logPath=(Join-Path $InstallPath 'logs');runPath=(Join-Path $InstallPath 'run');backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;healthIntervalSeconds=60;healthTimeoutSeconds=5;healthFailureThreshold=3;recoveryCooldownSeconds=120;maintenanceLockMinutes=15;logRetentionDays=14;logMaxBytes=5000000}
     $installed|ConvertTo-Json|Set-Content -Encoding UTF8 -LiteralPath $installedConfig
   }
   Copy-FileAtomically (Join-Path $package.Root 'tools\wdwelt.ps1') (Join-Path $InstallPath 'tools\wdwelt.ps1')
-  Copy-FileAtomically (Join-Path $package.Root 'tools\deployment.settings.json') (Join-Path $InstallPath 'tools\deployment.settings.json')
+  Copy-FileAtomically (Join-Path $package.Root 'tools\deployment.json') (Join-Path $InstallPath 'tools\deployment.json')
   if(-not $databasePrepared){
     & $nodeExecutable (Join-Path $InstallPath 'db\operations\backup.mjs') --config $installedAdminCredential --output (Join-Path $InstallPath 'backups') --label pre-migration
     if($LASTEXITCODE-ne0){throw 'Pre-migration database backup failed; migration was not started.'}
     & $nodeExecutable (Join-Path $InstallPath 'db\operations\migrate.mjs') --config $installedAdminCredential --migrations (Join-Path $InstallPath 'db\migrations')
     if($LASTEXITCODE-ne0){throw 'Database migration failed; WDWELT was not started.'}
   }
+  & $nodeExecutable (Join-Path $InstallPath 'db\operations\runtime-check.mjs') --config $installedRuntimeCredential --require-schema
+  if($LASTEXITCODE-ne0){throw 'G2 程式帳號缺少資料表或讀寫權限；未啟動 WDWELT。'}
   $installedTool=Join-Path $InstallPath 'tools\wdwelt.ps1'
   & $installedTool install-tasks -ConfigPath $installedConfig; if($LASTEXITCODE-ne0){throw 'Task Scheduler 安裝失敗。'}
   & $installedTool install-firewall -ConfigPath $installedConfig -AllowedRemoteAddress $chosenRemote -AllowPublicProfile:$AllowPublicProfile; if($LASTEXITCODE-ne0){throw 'Firewall rule 安裝失敗。'}
   & $installedTool start -ConfigPath $installedConfig; if($LASTEXITCODE-ne0){throw 'WDWELT 啟動或 health 驗證失敗。'}
+  & $installedTool network -ConfigPath $installedConfig; if($LASTEXITCODE-ne0){throw 'Production network 最終驗證失敗。'}
+  Remove-LegacyInstalledCredentials
   & $installedTool status -ConfigPath $installedConfig
   Write-Host "安裝成功：http://${chosen}:8080"
 }

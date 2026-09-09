@@ -32,7 +32,9 @@ export function backupDatabase({ configPath, outputDirectory, label = 'daily', r
   const content = readFileSync(backupPath);
   const hasUsers = content.includes(Buffer.from('CREATE TABLE `users`'));
   const hasMigrationLedger = content.includes(Buffer.from('schema_migrations'));
-  if (!content.length || !hasUsers || (safeLabel !== 'pre-migration' && !hasMigrationLedger)) {
+  const hasDatabase = /CREATE DATABASE[^\r\n]*`g2`/.test(content.toString('utf8')) && content.includes(Buffer.from('USE `g2`;'));
+  const completeDump = content.includes(Buffer.from('-- Dump completed on '));
+  if (!content.length || !hasDatabase || !completeDump || (safeLabel !== 'pre-migration' && (!hasUsers || !hasMigrationLedger))) {
     try { unlinkSync(backupPath); } catch { /* preserve verification error */ }
     throw new Error('Backup verification failed; invalid dump was removed');
   }

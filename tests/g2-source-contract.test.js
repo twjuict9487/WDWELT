@@ -47,4 +47,22 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(source('src/api.ts')).toContain('fetch(path');
     expect(source('db/operations/bootstrap.mjs')).toContain("host: '127.0.0.1', port: 3306");
   });
+
+  it('keeps host and MySQL listeners scoped to the configured machine', () => {
+    const development = JSON.parse(source('config/development.json'));
+    const manager = source('install/wdwelt.ps1');
+    const preflight = source('db/operations/preflight.mjs');
+
+    expect(development.bindAddress).toBe('127.0.0.1');
+    expect(manager).toContain('bindAddress=$chosen');
+    expect(manager).toContain('$listenerMatches');
+    expect(manager).toContain('Production network verification failed');
+    expect(manager).toContain('& $installedTool network -ConfigPath $installedConfig');
+    expect(manager).toContain('$createdProfilesMatch');
+    expect(manager).toContain('mysqlx_bind_address');
+    expect(manager).toContain("config\\database.runtime.json");
+    expect(manager).toContain("config\\database.admin.json");
+    expect(manager).toContain('Remove-LegacyInstalledCredentials');
+    expect(preflight).toContain('mysqlx_bind_address');
+  });
 });

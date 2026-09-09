@@ -4,6 +4,8 @@
   "version": "0.3.0",
   "type": "module",
   "scripts": {
+    "setup": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/bootstrap.ps1 -ExistingAccounts",
+    "test:setup:db": "node tests/integration/existing-accounts.mjs",
     "dev": "vite",
     "build": "node scripts/build/build-production.mjs",
     "host": "node server/app/server.mjs --config config/development.json",

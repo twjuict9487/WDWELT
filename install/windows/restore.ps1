@@ -34,7 +34,8 @@ try{
   Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue;$lockAcquired=$false
   & $tool start -ConfigPath $ConfigPath
   if($LASTEXITCODE-ne0){throw 'Restore completed but WDWELT readiness failed.'}
-  $ready=Invoke-RestMethod -Uri 'http://127.0.0.1:8080/health/ready' -TimeoutSec 5
+  $healthAddress=if([string]$config.bindAddress-in@('0.0.0.0','::','*','')){'127.0.0.1'}else{[string]$config.bindAddress}
+  $ready=Invoke-RestMethod -Uri "http://${healthAddress}:8080/health/ready" -TimeoutSec 5
   if($ready.status-ne'ok'){throw 'Restore completed but /health/ready is not healthy.'}
   Write-RestoreLog info restore_success 'Database restore completed; sessions were cleared.'
   Write-Host 'Restore completed; all sessions were cleared and users must log in again.'

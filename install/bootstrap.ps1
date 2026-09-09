@@ -1,7 +1,9 @@
 ﻿[CmdletBinding()]
 param(
   [switch]$PlanOnly,
+  [switch]$ExistingAccounts,
   [switch]$SkipTests,
+  [switch]$FullValidation,
   [switch]$NonInteractive,
   [switch]$AllowPublicProfile,
   [switch]$Offline,
@@ -18,6 +20,8 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $InstallDirectory = [IO.Path]::GetFullPath($PSScriptRoot)
 $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $InstallDirectory '..'))
+$ConfigRoot = Join-Path $RepositoryRoot 'config'
+$LocalConfigRoot = Join-Path $ConfigRoot 'local'
 $RuntimeRoot = Join-Path $RepositoryRoot 'runtime'
 $BootstrapLog = $null
 $PhaseNumber = 0
@@ -61,7 +65,7 @@ function Restart-ElevatedIfNeeded {
   if (Test-Administrator) { return $false }
   Write-Host '需要 Administrator 權限；即將顯示 Windows UAC。' -ForegroundColor Yellow
   $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-  foreach ($switchName in @('SkipTests','NonInteractive','AllowPublicProfile','Offline')) {
+  foreach ($switchName in @('ExistingAccounts','SkipTests','FullValidation','NonInteractive','AllowPublicProfile','Offline')) {
     if ((Get-Variable -Name $switchName -ValueOnly)) { $arguments += "-$switchName" }
   }
   foreach ($pair in @(
@@ -119,36 +123,41 @@ function Assert-DeploymentRemoteAddress([string]$Value) {
     if (-not [Net.IPAddress]::TryParse($Matches[1], [ref]$address) -or $address.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { throw "allowedClientRanges CIDR 不合法：$value" }
     $minimum = Get-DeploymentPrivateMinimumPrefix $address
     if (-not $minimum -or $prefix -lt $minimum -or $prefix -gt 32) { throw "allowedClientRanges 必須完整位於 RFC1918 private range：$value" }
+    $mask=[uint64]([Math]::Pow(2,32)-[Math]::Pow(2,32-$prefix))
+    if(((Convert-DeploymentIPv4ToNumber $address)-band$mask)-ne(Convert-DeploymentIPv4ToNumber $address)){throw "allowedClientRanges CIDR 必須使用 network address：$value"}
     return
   }
   if ($value -match '^([^-]+)-([^-]+)$') {
     $first=$null; $last=$null
     if (-not [Net.IPAddress]::TryParse($Matches[1], [ref]$first) -or -not [Net.IPAddress]::TryParse($Matches[2], [ref]$last) -or
+        $first.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or $last.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
         -not (Get-DeploymentPrivateMinimumPrefix $first) -or -not (Get-DeploymentPrivateMinimumPrefix $last) -or (Get-DeploymentPrivateClass $first) -ne (Get-DeploymentPrivateClass $last) -or
         (Convert-DeploymentIPv4ToNumber $first) -gt (Convert-DeploymentIPv4ToNumber $last)) { throw "allowedClientRanges range 不合法或不是 private IPv4：$value" }
     return
   }
   $single=$null
-  if (-not [Net.IPAddress]::TryParse($value, [ref]$single) -or -not (Get-DeploymentPrivateMinimumPrefix $single)) { throw "allowedClientRanges address 不合法或不是 private IPv4：$value" }
+  if (-not [Net.IPAddress]::TryParse($value, [ref]$single) -or $single.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or -not (Get-DeploymentPrivateMinimumPrefix $single)) { throw "allowedClientRanges address 不合法或不是 private IPv4：$value" }
 }
 
 function Read-DeploymentSettings {
-  $resolved = if ([string]::IsNullOrWhiteSpace($DeploymentSettingsPath)) { Join-Path $InstallDirectory 'deployment.settings.json' } else { Resolve-BootstrapInputPath $DeploymentSettingsPath }
+  $resolved = if ([string]::IsNullOrWhiteSpace($DeploymentSettingsPath)) { Join-Path $ConfigRoot 'deployment.json' } else { Resolve-BootstrapInputPath $DeploymentSettingsPath }
   if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "找不到 deployment settings：$resolved" }
   try { $settings = Get-Content -Raw -Encoding UTF8 -LiteralPath $resolved | ConvertFrom-Json } catch { throw "deployment settings JSON 無法解析：$resolved" }
   if ([int]$settings.schemaVersion -ne 1) { throw 'deployment settings schemaVersion 必須為 1。' }
   if ([string]::IsNullOrWhiteSpace([string]$settings.environmentName)) { throw 'deployment settings 缺少 environmentName。' }
   $hostAddress=$null; $gateway=$null
-  if (-not [Net.IPAddress]::TryParse([string]$settings.hostAddress,[ref]$hostAddress) -or -not (Get-DeploymentPrivateMinimumPrefix $hostAddress)) { throw 'hostAddress 必須是 private IPv4。' }
-  if (-not [Net.IPAddress]::TryParse([string]$settings.defaultGateway,[ref]$gateway) -or -not (Get-DeploymentPrivateMinimumPrefix $gateway)) { throw 'defaultGateway 必須是 private IPv4。' }
+  if (-not [Net.IPAddress]::TryParse([string]$settings.hostAddress,[ref]$hostAddress) -or $hostAddress.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or -not (Get-DeploymentPrivateMinimumPrefix $hostAddress)) { throw 'hostAddress 必須是 private IPv4。' }
+  if (-not [Net.IPAddress]::TryParse([string]$settings.defaultGateway,[ref]$gateway) -or $gateway.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or -not (Get-DeploymentPrivateMinimumPrefix $gateway)) { throw 'defaultGateway 必須是 private IPv4。' }
   if ([string]$settings.subnetCidr -notmatch '^(.+)/(\d{1,2})$') { throw 'subnetCidr 必須是 IPv4 CIDR。' }
   $subnet=$null; $prefix=[int]$Matches[2]
-  if (-not [Net.IPAddress]::TryParse($Matches[1],[ref]$subnet) -or $prefix -lt 1 -or $prefix -gt 32) { throw 'subnetCidr 必須是 IPv4 CIDR。' }
+  if (-not [Net.IPAddress]::TryParse($Matches[1],[ref]$subnet) -or $subnet.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or $prefix -lt 1 -or $prefix -gt 30) { throw 'subnetCidr 必須是可配置 host/gateway 的 IPv4 CIDR（prefix 1..30）。' }
   $minimum=Get-DeploymentPrivateMinimumPrefix $subnet
   if (-not $minimum -or $prefix -lt $minimum) { throw 'subnetCidr 必須完整位於 RFC1918 private range。' }
   $mask=[uint64]([Math]::Pow(2,32)-[Math]::Pow(2,32-$prefix)); $network=(Convert-DeploymentIPv4ToNumber $subnet) -band $mask
   if ((Convert-DeploymentIPv4ToNumber $subnet) -ne $network) { throw 'subnetCidr 必須使用 network address。' }
   if (((Convert-DeploymentIPv4ToNumber $hostAddress) -band $mask) -ne $network -or ((Convert-DeploymentIPv4ToNumber $gateway) -band $mask) -ne $network) { throw 'hostAddress 與 defaultGateway 必須位於 subnetCidr。' }
+  $broadcast=$network+[uint64]([Math]::Pow(2,32-$prefix)-1);$hostNumber=Convert-DeploymentIPv4ToNumber $hostAddress;$gatewayNumber=Convert-DeploymentIPv4ToNumber $gateway
+  if($hostNumber-in@($network,$broadcast)-or$gatewayNumber-in@($network,$broadcast)){throw 'hostAddress/defaultGateway 不可使用 network 或 broadcast address。'}
   $allowed=@($settings.allowedClientRanges | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
   if (-not $allowed.Count) { throw 'allowedClientRanges 不可為空。' }
   foreach($address in $allowed){Assert-DeploymentRemoteAddress $address}
@@ -210,6 +219,12 @@ function Install-LocalMsi([string]$Path, [string]$Description, [switch]$Passive)
 }
 
 function Ensure-Node {
+  if ($ExistingAccounts) {
+    $installedNode = Get-NodePath
+    if (-not $installedNode) { throw '找不到已安裝的 Node.js；請先安裝 Node.js 與 npm。' }
+    Assert-SupportedNode $installedNode
+    return $installedNode
+  }
   $node = Get-NodePath
   if (-not $node) {
     if (-not [string]::IsNullOrWhiteSpace($NodeInstallerPath)) {
@@ -335,6 +350,7 @@ function Ensure-MySqlService {
   $service = Select-MySqlService
   $mysql = if ($service) { Get-MySqlExecutable $service } else { $null }
   if (-not $service -or -not $mysql) {
+    if ($ExistingAccounts) { throw '找不到已安裝的 MySQL service/client；請確認 MySQL Server 與 command-line tools 已安裝。' }
     Open-MySqlInstaller
     $service = Select-MySqlService
     $mysql = if ($service) { Get-MySqlExecutable $service } else { $null }
@@ -367,25 +383,19 @@ function Set-LocalhostBind([string]$MyIni, [string]$ServiceName) {
   $lines = [Collections.Generic.List[string]]::new()
   [regex]::Split($original, '\r?\n') | ForEach-Object { $lines.Add($_) }
   $sectionIndex = -1
-  $nextSection = $lines.Count
   for ($index = 0; $index -lt $lines.Count; $index += 1) {
     if ($lines[$index] -match '^\s*\[mysqld\]\s*$') { $sectionIndex = $index; break }
   }
   if ($sectionIndex -lt 0) { throw "my.ini 缺少 [mysqld] section：$MyIni" }
-  for ($index = $sectionIndex + 1; $index -lt $lines.Count; $index += 1) {
-    if ($lines[$index] -match '^\s*\[[^]]+\]\s*$') { $nextSection = $index; break }
-  }
-  $bindIndex = -1
-  for ($index = $sectionIndex + 1; $index -lt $nextSection; $index += 1) {
-    if ($lines[$index] -match '^\s*bind[-_]address\s*=') { $bindIndex = $index; break }
-  }
-  if ($bindIndex -ge 0 -and $lines[$bindIndex] -match '^\s*bind[-_]address\s*=\s*127\.0\.0\.1\s*(?:[#;].*)?$') {
-    Write-Detail 'MySQL bind-address 已是 127.0.0.1。'
-    return
-  }
-  if ($bindIndex -ge 0) { $lines[$bindIndex] = 'bind-address=127.0.0.1' } else { $lines.Insert($sectionIndex + 1, 'bind-address=127.0.0.1') }
+  $nextSection = $lines.Count
+  for ($index = $sectionIndex + 1; $index -lt $lines.Count; $index += 1) { if ($lines[$index] -match '^\s*\[[^]]+\]\s*$') { $nextSection = $index; break } }
+  $settingPattern = '^\s*(?:bind[-_]address|mysqlx[-_]bind[-_]address)\s*='
+  for ($index = $nextSection - 1; $index -gt $sectionIndex; $index -= 1) { if ($lines[$index] -match $settingPattern) { $lines.RemoveAt($index) } }
+  $lines.Insert($sectionIndex + 1, 'mysqlx-bind-address=127.0.0.1')
+  $lines.Insert($sectionIndex + 1, 'bind-address=127.0.0.1')
   $newline = if ($original.Contains("`r`n")) { "`r`n" } else { "`n" }
   $updated = [string]::Join($newline, $lines)
+  if ($updated -eq $original) { Write-Detail 'MySQL classic/X Protocol bind 已是 localhost。'; return }
   $bytes = [IO.File]::ReadAllBytes($MyIni)
   $withBom = $bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191
   $encoding = [Text.UTF8Encoding]::new($withBom)
@@ -400,7 +410,7 @@ function Set-LocalhostBind([string]$MyIni, [string]$ServiceName) {
     Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
     throw "MySQL localhost bind 套用失敗，已還原 $backup。原因：$($_.Exception.Message)"
   }
-  Write-Detail "MySQL 已限制到 127.0.0.1；原設定備份：$backup"
+  Write-Detail "MySQL 3306 與 X Protocol 已限制到 127.0.0.1；原設定備份：$backup"
 }
 
 function Protect-LocalFile([string]$Path) {
@@ -422,7 +432,7 @@ function Write-ProtectedJson([string]$Path, $Value) {
 }
 
 function Read-AdminConfig([string]$MySqlPath, [string]$MySqlDumpPath) {
-  $configPath = Join-Path $RuntimeRoot 'config\migration.database.json'
+  $configPath = Join-Path $LocalConfigRoot 'database.admin.json'
   if (Test-Path -LiteralPath $configPath -PathType Leaf) {
     $existing = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
     if ($existing -isnot [pscustomobject]) { throw 'Administrative database config 必須是單一 JSON object。未覆寫原檔。' }
@@ -437,7 +447,7 @@ function Read-AdminConfig([string]$MySqlPath, [string]$MySqlDumpPath) {
       return [pscustomobject]@{ Path = $configPath; Config = $existing }
     }
   }
-  if ($NonInteractive) { throw 'NonInteractive 模式需要既有 runtime/config/migration.database.json。' }
+  if ($NonInteractive) { throw 'NonInteractive 模式需要既有 config/local/database.admin.json。' }
   $secure = Read-Host '請輸入 MySQL root 密碼（畫面不會顯示）' -AsSecureString
   if ($secure.Length -eq 0) { throw 'MySQL root 密碼不可為空。' }
   $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
@@ -455,6 +465,36 @@ function Read-AdminConfig([string]$MySqlPath, [string]$MySqlDumpPath) {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
     $plain = $null
   }
+}
+
+function Read-ExistingAccountConfig([string]$Role, [string]$MySqlPath, [string]$MySqlDumpPath, [int]$DefaultPort = 3306) {
+  $configPath = Join-Path $LocalConfigRoot "database.$Role.json"
+  if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+    $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+    foreach ($name in @('host','port','database','user','password')) {
+      if ($name -notin @($config.PSObject.Properties.Name)) { throw "${configPath} 缺少 $name；請修正設定後重跑。" }
+    }
+    if (-not $config.password -or $config.password -match '^REPLACE_') { throw "${configPath} 尚未填入有效密碼；請填入後重跑。" }
+  } else {
+    if ($NonInteractive) { throw "ExistingAccounts 模式需要 $configPath；或以互動模式輸入既有帳號。" }
+    $description = if ($Role -eq 'admin') { '安裝／備份帳號（需 G2 建表與備份權限）' } else { '程式讀寫帳號（G2 專用帳號）' }
+    $accountName = (Read-Host "請輸入既有 MySQL $description 名稱").Trim()
+    if (-not $accountName) { throw '帳號不可為空。' }
+    $portText = Read-Host "MySQL TCP port [${DefaultPort}]"
+    $portNumber = $DefaultPort
+    if ($portText -and (-not [int]::TryParse($portText, [ref]$portNumber) -or $portNumber -lt 1 -or $portNumber -gt 65535)) { throw 'MySQL port 不合法。' }
+    $secure = Read-Host "請輸入 $description 密碼（畫面不會顯示）" -AsSecureString
+    if (-not $secure.Length) { throw '密碼不可為空。' }
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+      $config = [pscustomobject]@{host='127.0.0.1';port=$portNumber;database='g2';user=$accountName;password=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)}
+    } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+  }
+  if ($config.host -notin @('127.0.0.1','localhost','::1') -or $config.database -ne 'g2') { throw '既有帳號設定必須連到 localhost 的 g2 database。' }
+  $config | Add-Member -NotePropertyName mysqlClientPath -NotePropertyValue $MySqlPath -Force
+  $config | Add-Member -NotePropertyName mysqlDumpPath -NotePropertyValue $MySqlDumpPath -Force
+  Write-ProtectedJson $configPath $config
+  return [pscustomobject]@{Path=$configPath;Config=$config}
 }
 
 function Quote-MySqlOption([string]$Value) {
@@ -536,6 +576,12 @@ function Assert-ProductionNetwork {
 }
 
 function Show-Plan {
+  if ($ExistingAccounts) {
+    Write-Host 'ExistingAccounts：使用已安裝的 Node.js/MySQL 與既有 g2 database；輸入或讀取安裝／備份及程式讀寫帳號。不建立帳號、不重設密碼、不修改權限或 MySQL 設定。'
+    Write-Host '流程：固定網路檢查 → 既有服務／帳號檢查 → npm ci → build/package → installer dry-run → 備份／migration → 安裝及健康檢查。'
+    Write-Host "部署設定：$DeploymentSettingsPath；網址：http://${ProductionCanonicalHost}:8080/"
+    return
+  }
   Write-Host @"
 WDWELT one-file bootstrap plan
   Preflight: validate repository and request Administrator through Windows UAC
@@ -543,18 +589,18 @@ WDWELT one-file bootstrap plan
   1. Require $ProductionCanonicalHost/$ProductionPrefixLength and gateway $ProductionGateway
   2. Detect or install Node.js LTS
   3. Detect MySQL Server 8.0; open the official wizard if absent
-  4. Back up my.ini and enforce bind-address=127.0.0.1
+  4. Back up my.ini and bind MySQL classic/X Protocol to 127.0.0.1
   5. Securely prompt for MySQL root password and create the database
   6. Install locked npm dependencies (online, or a supplied offline cache)
-  7. Run database preflight, backup, and migrations
+  7. Validate the administrative database connection
   8. Create and verify the least-privilege runtime account
-  9. Run tests and typecheck
+  9. Skip development tests by default; run them only with -FullValidation
  10. Build the production release
  11. Create and validate the production package
  12. Run the installer dry-run and show a final confirmation
  13. Install tasks and a $($ProductionAllowedRemoteAddresses -join ', ')-only firewall rule, then verify URLs
 
-The bootstrap never changes Windows NIC settings, never opens MySQL 3306 to the LAN, and never writes passwords to its log.
+The bootstrap never changes Windows NIC settings, never exposes MySQL classic/X Protocol to the LAN, and never writes passwords to its log.
 "@
 }
 
@@ -581,15 +627,24 @@ function Main {
   $serviceName = $mysqlState.Service.Name
 
   Write-Phase '備份 MySQL 設定並限制到 localhost'
-  $myIni = Find-MyIni $mysqlState.Service
-  Set-LocalhostBind $myIni $serviceName
+  if ($ExistingAccounts) { Write-Detail '保留 IT 已配置的 MySQL 設定；正式安裝前驗證 localhost 綁定。' }
+  else {
+    $myIni = Find-MyIni $mysqlState.Service
+    Set-LocalhostBind $myIni $serviceName
+  }
 
   Write-Phase '建立 administrative config 與 g2 database'
-  $admin = Read-AdminConfig $mysqlState.MySql $mysqlState.MySqlDump
-  Ensure-G2Database $mysqlState.MySql $admin.Config
+  if ($ExistingAccounts) {
+    $admin = Read-ExistingAccountConfig 'admin' $mysqlState.MySql $mysqlState.MySqlDump
+    $existingRuntime = Read-ExistingAccountConfig 'runtime' $mysqlState.MySql $mysqlState.MySqlDump ([int]$admin.Config.port)
+    if ($admin.Config.port -ne $existingRuntime.Config.port) { throw '安裝與程式帳號必須連到相同 MySQL port。' }
+  } else {
+    $admin = Read-AdminConfig $mysqlState.MySql $mysqlState.MySqlDump
+    Ensure-G2Database $mysqlState.MySql $admin.Config
+  }
 
   Write-Phase '安裝 WDWELT JavaScript dependencies'
-  $npmArguments = @('ci','--no-audit','--fund=false')
+  $npmArguments = @('ci','--include=dev','--no-audit','--fund=false')
   if ($Offline) {
     $offlineCache = Resolve-BootstrapInputPath $NpmCachePath
     if (-not $offlineCache -or -not (Test-Path -LiteralPath $offlineCache -PathType Container)) {
@@ -599,26 +654,23 @@ function Main {
   }
   Invoke-Native $npm $npmArguments "npm ci$(if($Offline){' --offline'}else{''})"
 
-  Write-Phase '執行 DB preflight、backup 與 migration'
+  Write-Phase '驗證 administrative database connection'
   Invoke-Node $node @('db\operations\preflight.mjs','--config',$admin.Path) 'database preflight'
-  $backupRoot = Join-Path $RuntimeRoot 'backups'
-  [IO.Directory]::CreateDirectory($backupRoot) | Out-Null
-  Invoke-Node $node @('db\operations\backup.mjs','--config',$admin.Path,'--output',$backupRoot,'--label','pre-migration') 'pre-migration backup'
-  Invoke-Node $node @('db\operations\migrate.mjs','--config',$admin.Path) 'database migration'
 
   Write-Phase '建立或驗證最小權限 runtime account'
-  $runtimeConfig = Join-Path $RuntimeRoot 'config\database.local.json'
-  Invoke-Node $node @('db\operations\bootstrap.mjs','--admin-config',$admin.Path,'--runtime-config',$runtimeConfig) 'runtime account bootstrap'
+  $runtimeConfig = Join-Path $LocalConfigRoot 'database.runtime.json'
+  if (-not $ExistingAccounts) {
+    Invoke-Node $node @('db\operations\bootstrap.mjs','--admin-config',$admin.Path,'--runtime-config',$runtimeConfig) 'runtime account bootstrap'
+  }
   Invoke-Node $node @('db\operations\runtime-check.mjs','--config',$runtimeConfig) 'runtime database readiness'
 
-  Write-Phase '執行 tests 與 typecheck'
-  if ($SkipTests) { Write-Detail 'SkipTests 已指定；跳過 unit/integration tests。' }
-  else {
+  Write-Phase '選擇性執行 development validation'
+  if ($FullValidation -and -not $SkipTests) {
     Invoke-Native $npm @('test','--','--run') 'unit tests'
     Invoke-Native $npm @('run','typecheck') 'TypeScript typecheck'
     Invoke-Native $npm @('run','test:db','--','--config',$admin.Path) 'isolated database integration'
     Invoke-Native $npm @('run','test:restore','--','--config',$admin.Path) 'isolated restore integration'
-  }
+  } else { Write-Detail '快速 production install：跳過 development tests；需要完整驗證時使用 -FullValidation。' }
 
   Write-Phase '建立 production build'
   Invoke-Native $npm @('run','build') 'production build'
@@ -634,7 +686,7 @@ function Main {
   $installParameters = @{
     InstallPath=$InstallPath; CanonicalHost=$lanIp; AllowedRemoteAddress=$ProductionAllowedRemoteAddresses
     NodePath=$node; MySqlServiceName=$serviceName; DatabaseConfigPath=$runtimeConfig; AdminDatabaseConfigPath=$admin.Path
-    AllowPublicProfile=[bool]$AllowPublicProfile; DeploymentSettingsPath=(Join-Path $packageRoot 'tools\deployment.settings.json')
+    AllowPublicProfile=[bool]$AllowPublicProfile; DeploymentSettingsPath=(Join-Path $packageRoot 'tools\deployment.json')
   }
   & $packageTool install @installParameters -DryRun
   if ($LASTEXITCODE -ne 0) { throw 'Installer dry-run 失敗；未執行正式安裝。' }
@@ -642,7 +694,7 @@ function Main {
   Write-Phase '確認並執行正式安裝'
   Write-Host "InstallPath：$InstallPath"
   Write-Host "MySQL service：$serviceName"
-  Write-Host "PC URL：http://127.0.0.1:8080/"
+  Write-Host "PC URL：http://${lanIp}:8080/"
   Write-Host "iPhone URL：http://${lanIp}:8080/"
   Write-Host "Firewall remote scope：$($ProductionAllowedRemoteAddresses -join ', ') only"
   if (-not (Confirm-Choice "確認建立 scheduled tasks、僅允許 $($ProductionAllowedRemoteAddresses -join ', ') 的 TCP 8080 firewall rule 並啟動 WDWELT？")) { throw '使用者在正式安裝前取消；prerequisites、DB 與 package 已準備完成。' }
@@ -651,7 +703,7 @@ function Main {
 
   Write-BootstrapLog info 'bootstrap_complete'
   Write-Host "`nWDWELT 安裝完成。" -ForegroundColor Green
-  Write-Host "PC：http://127.0.0.1:8080/"
+  Write-Host "PC：http://${lanIp}:8080/"
   Write-Host "iPhone：http://${lanIp}:8080/"
   Write-Host "Log：$BootstrapLog"
 }

@@ -25,6 +25,7 @@ function New-Package([string]$Name,[string]$Version,[string]$Build,[switch]$Brok
   Copy-Item (Join-Path $ProjectRoot 'install\windows\backup.ps1') $root\tools\database\backup.ps1
   Copy-Item (Join-Path $ProjectRoot 'install\windows\restore.ps1') $root\tools\database\restore.ps1
   Copy-Item (Join-Path $ProjectRoot 'install\wdwelt.ps1') $root\tools\wdwelt.ps1
+  Copy-Item (Join-Path $ProjectRoot 'config\deployment.json') $root\tools\deployment.json
   & (Get-Command node).Source (Join-Path $ProjectRoot 'scripts\build\copy-production-dependencies.mjs') $ProjectRoot $root\host\node_modules | Out-Host
   if($LASTEXITCODE-ne0){throw 'Could not stage production dependencies.'}
   $metadata=Get-Content -Raw -Encoding UTF8 $root\production\build-metadata.json|ConvertFrom-Json;$metadata.version=$Version;$metadata.build=$Build;$metadata|ConvertTo-Json|Set-Content -Encoding UTF8 $root\production\build-metadata.json
@@ -44,7 +45,8 @@ try{
   & (Get-Command node).Source (Join-Path $ProjectRoot 'scripts\build\copy-production-dependencies.mjs') $ProjectRoot (Join-Path $TestRoot 'tools\host\node_modules')
   if($LASTEXITCODE-ne0){throw 'Could not stage host production dependencies.'}
   Copy-Item (Join-Path $ProjectRoot 'install\wdwelt.ps1') $Tool
-  $config=@{port=8080;bindAddress='127.0.0.1';canonicalHost='192.168.0.18';canonicalUrl='http://192.168.0.18:8080';networkPolicy='school-fixed-v1';networkPrefixLength=22;networkGateway='192.168.1.254';allowedRemoteAddresses=@('192.168.0.0/22');installPath='..';currentPath='..\current';logPath='..\logs';runPath='..\run';nodePath=(Get-Command node).Source;healthIntervalSeconds=1;healthTimeoutSeconds=2;healthFailureThreshold=2;recoveryCooldownSeconds=30;maintenanceLockMinutes=1;logRetentionDays=2;logMaxBytes=100000}
+  Copy-Item (Join-Path $ProjectRoot 'config\deployment.json') (Join-Path $TestRoot 'tools\deployment.json')
+  $config=@{port=8080;bindAddress='127.0.0.1';canonicalHost='192.168.0.18';canonicalUrl='http://192.168.0.18:8080';networkPolicy='test-local-v1';networkPrefixLength=22;networkGateway='192.168.1.254';allowedRemoteAddresses=@('192.168.0.0/22');installPath='..';currentPath='..\current';logPath='..\logs';runPath='..\run';nodePath=(Get-Command node).Source;healthIntervalSeconds=1;healthTimeoutSeconds=2;healthFailureThreshold=2;recoveryCooldownSeconds=30;maintenanceLockMinutes=1;logRetentionDays=2;logMaxBytes=100000}
   $config|ConvertTo-Json|Set-Content -Encoding UTF8 $ConfigPath
 
   $unknownScript=Join-Path $TestRoot 'unknown-port-owner.mjs'

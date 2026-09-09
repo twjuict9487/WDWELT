@@ -1,5 +1,7 @@
 # 今天上到哪
 
+**已有 Node.js、MySQL 與 G2 帳號的 Windows 10 主機：** 設定 `config/deployment.json` 後執行 `npm.cmd run setup`。不需先跑 `npm install`；詳見 [既有環境快速安裝](install/EXISTING-ENVIRONMENT.md)。
+
 ## WDWELT G2 試行版 0.3.0
 
 > **教師用課表與課程進度工具**
@@ -14,7 +16,7 @@
 | 網頁服務   | TCP `8080`                            |
 | 正式網址   | `http://192.168.0.18:8080`            |
 | 校內網段   | `192.168.0.0/22`                      |
-| 環境設定   | `install/deployment.settings.json`    |
+| 環境設定   | `config/deployment.json`    |
 | 正式資料   | MySQL `g2`                            |
 | 資料庫連線  | `127.0.0.1:3306`                      |
 | 時區     | `Asia/Taipei`                         |
@@ -349,7 +351,7 @@ Repository 根目錄只保留入口、套件設定與主要說明文件；產生
 
 ## 3. 基本啟動流程
 
-全新 Windows 電腦可直接在檔案總管雙擊 [`install/START-WDWELT.cmd`](install/START-WDWELT.cmd)。它會從自身位置尋找 repository，自動檢查／安裝 prerequisites、準備 DB、測試、build、package，先 dry-run，再經確認正式安裝。需要人工處理的 UAC、MySQL 初次設定、root 密碼與多網卡選擇會在畫面中逐步提示；完整說明見 [`install/README.md`](install/README.md)。
+全新 Windows 電腦可直接在檔案總管雙擊 [`install/START-WDWELT.cmd`](install/START-WDWELT.cmd)。它會從自身位置尋找 repository，自動檢查／安裝 prerequisites、準備 DB、build、package，先 dry-run，再經確認正式安裝；預設略過開發測試以縮短部署時間，需要時可用 `-FullValidation` 執行完整驗證。需要人工處理的 UAC、MySQL 初次設定與 root 密碼會在畫面中逐步提示；完整說明見 [`install/README.md`](install/README.md)。
 
 若只要在已具備 Node.js 與 MySQL 的開發電腦手動啟動，請在 repo 根目錄執行：
 
@@ -530,8 +532,8 @@ npm.cmd test
 npm.cmd run typecheck
 npm.cmd run build
 
-npm.cmd run test:db -- --config .\runtime\config\migration.database.json
-npm.cmd run test:restore -- --config .\runtime\config\migration.database.json
+npm.cmd run test:db -- --config .\config\local\database.admin.json
+npm.cmd run test:restore -- --config .\config\local\database.admin.json
 
 npm.cmd run test:g2:lifecycle
 
@@ -1003,7 +1005,7 @@ WDWELT 開始從「專案」往「可以部署的軟體」移動。
 
 ## 目前基礎驗證
 
-* **74 / 74 tests 通過**
+* **79 / 79 tests 通過**
 * **TypeScript 型別檢查通過**
 * **正式建置通過**
 

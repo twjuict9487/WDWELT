@@ -2,6 +2,7 @@ node_modules/
 dist/
 artifacts/
 runtime/
+/config/local/
 install/offline/
 test-db.js
 .deno-cache/
