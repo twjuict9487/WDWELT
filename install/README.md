@@ -242,6 +242,8 @@ Test-Path .\package.json
 - **一般 terminal**：VS Code 內建 terminal，用於下載 dependencies、build、test 與準備設定。
 - **Administrator PowerShell**：Windows 以系統管理員身分開啟的 PowerShell，用於修改 MySQL 設定、Windows service、Task Scheduler、Firewall 與正式安裝。
 
+需要直接執行本專案或已安裝的 `.ps1` 時，先在該 PowerShell 視窗執行 `Set-ExecutionPolicy -Scope Process Bypass -Force`。它只影響目前 process，關閉視窗後失效；`npm.cmd run setup` 與 Scheduled Tasks 已自行使用相同的 process-level `Bypass`。
+
 不要讓日常開發一直使用 Administrator 權限。只有標示「Administrator」的步驟才提升權限。
 
 開啟 Administrator PowerShell：
@@ -711,7 +713,7 @@ node .\db\operations\runtime-check.mjs --config .\config\local\database.runtime.
 "ready": true
 ```
 
-再次執行 preflight，這次應看到六個 application／migration tables：
+再次執行 preflight，這次應看到七個 application／migration tables（包含 `password_reset_tokens`）：
 
 ```powershell
 npm.cmd run db:preflight -- --config .\config\local\database.admin.json
@@ -1274,7 +1276,8 @@ Bootstrap 會拒絕自行重設已存在 account 的密碼。先從安全 backup
 - [ ] `MySQL80` Running／Automatic。
 - [ ] MySQL classic protocol `3306` 與 X Protocol 都只 listen 在 localhost。
 - [ ] `g2` database 存在。
-- [ ] Migration 完成且六個 tables 存在。
+- [ ] Migration 完成且七個 tables（包含 `password_reset_tokens`）存在。
+- [ ] Machine 環境變數 `WDWELT_MASTER_RECOVERY_KEY` 至少 32 字元、不是 placeholder，且設定後已重新啟動 Windows。
 - [ ] `wdwelt_app@localhost` 僅有 CRUD grants。
 - [ ] `npm.cmd test`、typecheck、build 通過。
 - [ ] Package 建立成功。

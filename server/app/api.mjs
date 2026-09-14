@@ -10,6 +10,7 @@ import {
   verifyPassword,
 } from './auth.mjs';
 import { DatabaseUnavailableError } from './db.mjs';
+import { readResetCookie, recoveryKeyVerifier, resetCookie, RESET_SECONDS } from './recovery.mjs';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_CLASS_NAME = 20;
@@ -117,12 +118,59 @@ function validateTimetableBody(body) {
   });
 }
 
-export function createApiHandler({ database, log = () => {} }) {
+export function createApiHandler({ database, log = () => {}, masterRecoveryKey = process.env.WDWELT_MASTER_RECOVERY_KEY }) {
   const sessionSeconds = database.config.sessionDurationHours * 3600;
+  const verifyRecoveryKey = recoveryKeyVerifier(masterRecoveryKey);
+  masterRecoveryKey = undefined;
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (!url.pathname.startsWith('/api/')) return false;
     try {
+      if (url.pathname === '/api/auth/recovery/verify' && request.method === 'POST') {
+        response.setHeader('Set-Cookie', resetCookie());
+        if (!verifyRecoveryKey) throw new HttpError(503, '密碼復原尚未設定，請聯絡主機管理者。');
+        const body = await readJson(request);
+        let normalized;
+        try { normalized = normalizeUsername(body.username); }
+        catch { throw new HttpError(401, '帳號或復原金鑰不正確。'); }
+        const keyMatches = verifyRecoveryKey(body.recoveryKey);
+        const accounts = await database.execute('SELECT id FROM users WHERE normalized_username = ? LIMIT 1', [normalized.normalizedUsername]);
+        if (!keyMatches || !accounts.length) throw new HttpError(401, '帳號或復原金鑰不正確。');
+        const { token, tokenHash } = createSessionToken();
+        await database.execute('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, created_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND), UTC_TIMESTAMP(3))', [tokenHash, accounts[0].id, RESET_SECONDS]);
+        log('info', 'recovery_verified', 'Password recovery verified.');
+        sendJson(response, 200, { resetAllowed: true }, { 'Set-Cookie': resetCookie(token, RESET_SECONDS) });
+        return true;
+      }
+
+      if (url.pathname === '/api/auth/recovery/reset' && request.method === 'POST') {
+        if (!verifyRecoveryKey) throw new HttpError(503, '密碼復原尚未設定，請聯絡主機管理者。');
+        const token = readResetCookie(request.headers.cookie);
+        const invalid = () => new HttpError(401, '密碼重設驗證已失效，請重新驗證。');
+        if (!token) throw invalid();
+        const tokenHash = hashSessionToken(token);
+        const capabilities = await database.execute('SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND expires_at > UTC_TIMESTAMP(3)', [tokenHash]);
+        if (!capabilities.length) throw invalid();
+        const body = await readJson(request);
+        let password;
+        try { password = validatePassword(body.password); }
+        catch { throw new HttpError(400, '密碼必須為 3–256 個字元。'); }
+        const saved = await hashPassword(password);
+        await database.transaction(async (transaction) => {
+          const userId = capabilities[0].user_id;
+          // A user lock serializes resets, including different tokens for the same account.
+          const users = await transaction.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
+          const valid = await transaction.execute('SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP(3) FOR UPDATE', [tokenHash, userId]);
+          if (!users.length || !valid.length) throw invalid();
+          await transaction.execute('UPDATE users SET password_salt = ?, password_hash = ?, password_parameters = ? WHERE id = ?', [saved.salt, saved.hash, JSON.stringify(saved.parameters), userId]);
+          await transaction.execute('DELETE FROM password_reset_tokens WHERE user_id = ?', [userId]);
+          await transaction.execute('DELETE FROM sessions WHERE user_id = ?', [userId]);
+        });
+        log('info', 'recovery_reset', 'Password reset completed.');
+        sendJson(response, 200, { reset: true }, { 'Set-Cookie': [resetCookie(), clearSessionCookie()] });
+        return true;
+      }
+
       if (url.pathname === '/api/auth/register' && request.method === 'POST') {
         const body = await readJson(request);
         const { username, normalizedUsername } = normalizeUsername(body.username);

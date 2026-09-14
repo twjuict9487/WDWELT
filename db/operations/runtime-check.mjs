@@ -12,7 +12,7 @@ export async function checkRuntimeDatabase(configPath, { requireSchema = false }
     const [rows] = await connection.query('SELECT DATABASE() AS databaseName, 1 AS ready');
     if (rows[0]?.databaseName !== 'g2' || Number(rows[0]?.ready) !== 1) throw new Error('Runtime connection did not reach g2');
     if (requireSchema) {
-      for (const [table, column] of [['users', 'id'], ['sessions', 'user_id'], ['courses', 'id'], ['timetable_entries', 'user_id'], ['course_progress', 'course_id']]) {
+      for (const [table, column] of [['users', 'id'], ['sessions', 'user_id'], ['courses', 'id'], ['timetable_entries', 'user_id'], ['course_progress', 'course_id'], ['password_reset_tokens', 'user_id']]) {
         await connection.query(`SELECT * FROM \`${table}\` LIMIT 0`);
         await connection.query(`EXPLAIN INSERT INTO \`${table}\` (\`${column}\`) VALUES (1)`);
         await connection.query(`EXPLAIN UPDATE \`${table}\` SET \`${column}\` = \`${column}\` WHERE 1 = 0`);

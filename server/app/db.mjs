@@ -57,6 +57,7 @@ export class DatabaseManager {
     void this.checkReady();
     this.#cleanupTimer = setInterval(() => {
       void this.execute('DELETE FROM sessions WHERE expires_at <= UTC_TIMESTAMP(3)').catch(() => {});
+      void this.execute('DELETE FROM password_reset_tokens WHERE expires_at <= UTC_TIMESTAMP(3)').catch(() => {});
     }, this.#config.sessionCleanupMinutes * 60_000);
     this.#cleanupTimer.unref();
   }

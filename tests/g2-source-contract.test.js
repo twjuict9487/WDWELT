@@ -25,12 +25,53 @@ describe('G2 source-of-truth and secret boundaries', () => {
     const frontend = `${source('src/app.ts')}\n${source('src/api.ts')}\n${source('vite.config.ts')}`;
     expect(frontend).not.toMatch(/VITE_.*(?:PASSWORD|DATABASE|MYSQL)/i);
     expect(frontend).not.toContain('wdwelt_app');
+    expect(frontend).not.toContain('WDWELT_MASTER_RECOVERY_KEY');
+    expect(frontend).not.toMatch(/masterRecoveryKey|recoveryKeyVerifier/);
+  });
+
+  it('keeps the weekly overview below the unchanged timeline and routes entries to the existing editor', () => {
+    const app = source('src/app.ts');
+    const home = app.slice(app.indexOf('function renderHome'), app.indexOf('function autoCenterTimelineCard'));
+    expect(home.indexOf('${renderTimeline(timeline, now)}')).toBeLessThan(home.indexOf('${renderWeeklyCourses()}'));
+    expect(app).toContain("document.querySelectorAll<HTMLButtonElement>('.weekly-entry')");
+    expect(app).toContain("openProgress(courseId, entry.dataset.timeLabel ?? '')");
+    expect(app.match(/function renderProgress\(\)/g)).toHaveLength(1);
+    expect(source('src/weekly.ts')).not.toMatch(/localStorage|fetch\(|saveProgress/);
+  });
+
+  it('keeps recovery host-only and separate from normal session authentication', () => {
+    const api = source('server/app/api.mjs');
+    const recovery = source('server/app/recovery.mjs');
+    expect(api).toContain('process.env.WDWELT_MASTER_RECOVERY_KEY');
+    expect(api).toContain("'/api/auth/recovery/verify'");
+    expect(api).toContain("'/api/auth/recovery/reset'");
+    expect(recovery).toContain("const cookieName = 'wdwelt_reset'");
+    expect(recovery).toContain('Path=/api/auth/recovery');
+    expect(source('server/app/auth.mjs')).not.toContain('wdwelt_reset');
+    expect(api).not.toMatch(/log\([^\n]*(?:body|recoveryKey|password|token)/);
+  });
+
+  it('keeps weekly and recovery controls within the existing mobile layout contract', () => {
+    const css = source('src/styles.css');
+    const app = source('src/app.ts');
+    expect(css).toMatch(/\*\s*\{\s*box-sizing:\s*border-box;/);
+    expect(css).toMatch(/\.app-shell\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*520px;[^}]*padding:/s);
+    expect(css).toMatch(/input,\s*textarea\s*\{[^}]*width:\s*100%;/s);
+    expect(css).toMatch(/\.weekly-entry\s*\{[^}]*width:\s*100%;[^}]*min-height:\s*56px;[^}]*display:\s*flex;/s);
+    expect(css).toMatch(/\.weekly-details\s*\{[^}]*min-width:\s*0;/s);
+    expect(css).toMatch(/\.weekly-name,\s*\.weekly-progress\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
+    for (const state of [':hover', ':focus-visible', ':active']) expect(css).toContain(`.weekly-entry${state}`);
+    expect(app).toContain("form.dataset.submitting = 'true'");
+    expect(app).toContain("field('recovery-key').value = ''");
+    expect(app).toContain("authNotice = '密碼已更新，請使用新密碼登入。'");
   });
 
   it('expands database-tool wildcards during installation', () => {
     const manager = source('install/wdwelt.ps1');
     expect(manager).not.toMatch(/Copy-Item\s+-LiteralPath\s+\(Join-Path\s+\$package\.Root\s+'db\\\*'\)/);
     expect(manager.match(/Copy-Item\s+-Path\s+\(Join-Path\s+\$package\.Root\s+'db\\\*'\)/g)).toHaveLength(2);
+    expect(manager).toContain("Join-Path $hostRoot 'recovery.mjs'");
+    expect(manager).toContain("Join-Path $databaseRoot 'migrations\\002_password_recovery.sql'");
   });
 
   it('has no public tunnel, port-forwarding, or external runtime endpoint', () => {

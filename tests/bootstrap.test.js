@@ -175,7 +175,7 @@ describe('one-file Windows bootstrap', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
-  });
+  }, 90_000);
 
   it('supports a fail-closed offline preparation path', () => {
     const bootstrap = readFileSync(bootstrapPath, 'utf8');

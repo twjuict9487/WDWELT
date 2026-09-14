@@ -12,9 +12,10 @@ import { loadDatabaseConfig } from '../../db/core/config.mjs';
 
 const hostDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = dirname(dirname(hostDir));
-const requiredMigrationId = '001_initial.sql';
-const requiredMigrationSql = readFileSync(resolve(projectRoot, 'db', 'migrations', requiredMigrationId), 'utf8').replace(/^\uFEFF/, '');
-const requiredMigrationChecksum = createHash('sha256').update(requiredMigrationSql).digest('hex');
+const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql'].map((id) => ({
+  id,
+  checksum: createHash('sha256').update(readFileSync(resolve(projectRoot, 'db', 'migrations', id), 'utf8').replace(/^\uFEFF/, '')).digest('hex'),
+}));
 const readJsonFile = (path) => JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
 const args = process.argv.slice(2);
 const valueAfter = (name, fallback) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : fallback; };
@@ -57,7 +58,10 @@ const apiHandler = createApiHandler({ database, log });
 const currentMigration = () => database.currentMigration();
 const checkApplicationDatabase = async () => {
   if (!await database.checkReady()) return false;
-  return database.hasMigration(requiredMigrationId, requiredMigrationChecksum);
+  for (const migration of requiredMigrations) {
+    if (!await database.hasMigration(migration.id, migration.checksum)) return false;
+  }
+  return true;
 };
 const staticHandler = createRequestHandler({ root, startedAt, checkDatabase: checkApplicationDatabase, currentMigration, databaseStatus: () => database.status });
 const server = createServer(async (request, response) => {

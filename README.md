@@ -1,5 +1,7 @@
 # 今天上到哪
 
+G2 Pilot 新增首頁「本週課程」與登入頁「忘記密碼」。啟用密碼復原前需套用 migration 並設定 backend 的 `WDWELT_MASTER_RECOVERY_KEY`；詳見 [本週課程與密碼復原](docs/G2-Weekly-Recovery.md)。
+
 **已有 Node.js、MySQL 與 G2 帳號的 Windows 10 主機：** 設定 `config/deployment.json` 後執行 `npm.cmd run setup`。不需先跑 `npm install`；詳見 [既有環境快速安裝](install/EXISTING-ENVIRONMENT.md)。
 
 ## WDWELT G2 試行版 0.3.0
@@ -434,6 +436,7 @@ Get-NetTCPConnection -LocalPort 3306 -State Listen |
 | `courses`           | 課程      |
 | `timetable_entries` | 課表項目    |
 | `course_progress`   | 課程進度與備註 |
+| `password_reset_tokens` | 短效密碼重設權限 |
 
 ### Migration ledger
 
@@ -485,6 +488,8 @@ Client 不得自行指定其他使用者的 `user_id`。
 | `POST` | `/api/auth/login`    | 登入       |
 | `POST` | `/api/auth/logout`   | 登出       |
 | `GET`  | `/api/auth/me`       | 取得目前登入身分 |
+| `POST` | `/api/auth/recovery/verify` | 驗證帳號與主復原金鑰 |
+| `POST` | `/api/auth/recovery/reset` | 使用短效權限重設密碼 |
 
 ### 課表
 
@@ -537,7 +542,7 @@ npm.cmd run test:restore -- --config .\config\local\database.admin.json
 
 npm.cmd run test:g2:lifecycle
 
-.\install\wdwelt.ps1 package -PackagePath .\artifacts\wdwelt-package
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install\wdwelt.ps1 package -PackagePath .\artifacts\wdwelt-package
 ```
 
 ### 資料庫測試限制
@@ -1005,9 +1010,11 @@ WDWELT 開始從「專案」往「可以部署的軟體」移動。
 
 ## 目前基礎驗證
 
-* **79 / 79 tests 通過**
+* **90 / 90 tests 通過**
 * **TypeScript 型別檢查通過**
 * **正式建置通過**
+* **55 項隔離資料庫、49 項 lifecycle、5 項既有帳號安裝測試通過**
+* **30 秒 soak：242 requests、0 failures、無 restart loop 或 orphan process**
 
 ## 現在正在處理
 

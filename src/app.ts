@@ -7,6 +7,8 @@ import {
   login,
   logout,
   register,
+  verifyRecovery,
+  resetPassword,
   removeProgress,
   removeTimetable,
   saveProgress,
@@ -46,8 +48,9 @@ import {
   shouldCenterTimelineCard,
 } from './timeline';
 import type { AppState, Course, CourseProgress, DraftEntry } from './types';
+import { weeklyCourses } from './weekly';
 
-type Screen = 'loading' | 'login' | 'register' | 'home' | 'timetable' | 'progress' | 'settings';
+type Screen = 'loading' | 'login' | 'register' | 'recovery' | 'reset-password' | 'home' | 'timetable' | 'progress' | 'settings';
 type TimetableIntent = 'create' | 'edit';
 type ToastKind = 'success' | 'error';
 
@@ -253,10 +256,12 @@ function renderLogin(): void {
       <div class="button-stack">
         <button class="button primary" type="submit">登入</button>
         ${button('open-register', '建立帳號', 'secondary')}
+        ${button('open-recovery', '忘記密碼', 'quiet')}
       </div>
     </form>
   `);
   document.querySelector('#open-register')?.addEventListener('click', () => { authNotice = null; screen = 'register'; render(); });
+  document.querySelector('#open-recovery')?.addEventListener('click', () => { authNotice = null; screen = 'recovery'; render(); });
   document.querySelector<HTMLFormElement>('#login-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
@@ -273,6 +278,60 @@ function renderLogin(): void {
     } catch (error) {
       showFormError(authErrorMessage(error));
       submit?.removeAttribute('disabled');
+    }
+  });
+}
+
+function renderRecovery(): void {
+  const resetting = screen === 'reset-password';
+  root.innerHTML = page(resetting ? '設定新密碼' : '忘記密碼', `
+    <form id="recovery-form" class="panel form-panel auth-panel">
+      <p>${resetting ? '驗證有效時間為 10 分鐘，請設定新密碼。' : '請輸入帳號與主機管理者提供的主復原金鑰。'}</p>
+      ${resetting ? `
+        <label>新密碼<input name="password" type="password" minlength="3" maxlength="256" autocomplete="new-password" required /></label>
+        <label>確認密碼<input name="confirm-password" type="password" minlength="3" maxlength="256" autocomplete="new-password" required /></label>
+      ` : `
+        <label>帳號<input name="username" maxlength="50" autocomplete="username" required /></label>
+        <label>主復原金鑰<input name="recovery-key" type="password" maxlength="4096" autocomplete="off" required /></label>
+      `}
+      <p id="form-error" class="status error" role="alert" hidden></p>
+      <div class="button-stack">
+        <button class="button primary" type="submit">${resetting ? '設定新密碼' : '驗證'}</button>
+        ${resetting ? button('verify-again', '重新驗證', 'quiet') : ''}
+        ${button('recovery-back', '返回登入', 'quiet')}
+      </div>
+    </form>
+  `);
+  document.querySelector('#recovery-back')?.addEventListener('click', () => { screen = 'login'; render(); });
+  document.querySelector('#verify-again')?.addEventListener('click', () => { screen = 'recovery'; render(); });
+  document.querySelector<HTMLFormElement>('#recovery-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    if (form.dataset.submitting) return;
+    const field = (name: string) => form.elements.namedItem(name) as HTMLInputElement;
+    if (resetting && field('password').value !== field('confirm-password').value) {
+      showFormError('兩次輸入的密碼不一致。'); return;
+    }
+    form.dataset.submitting = 'true';
+    form.querySelectorAll<HTMLButtonElement>('button').forEach((element) => { element.disabled = true; });
+    try {
+      if (resetting) {
+        await resetPassword(field('password').value);
+        form.reset();
+        loginUsername = '';
+        authNotice = '密碼已更新，請使用新密碼登入。';
+        screen = 'login';
+      } else {
+        try { await verifyRecovery(field('username').value, field('recovery-key').value); }
+        finally { field('recovery-key').value = ''; }
+        screen = 'reset-password';
+      }
+      render();
+    } catch (error) {
+      showFormError(authErrorMessage(error));
+    } finally {
+      delete form.dataset.submitting;
+      form.querySelectorAll<HTMLButtonElement>('button').forEach((element) => { element.disabled = false; });
     }
   });
 }
@@ -464,6 +523,21 @@ function renderDebugControls(): string {
   `;
 }
 
+function renderWeeklyCourses(): string {
+  return `<section class="panel weekly-overview" aria-labelledby="weekly-heading">
+    <h2 id="weekly-heading">本週課程</h2>
+    ${weeklyCourses(state).map((day) => `<section class="weekly-day" aria-label="${weekdayNames[day.weekday]}">
+      <h3>${weekdayNames[day.weekday]}</h3>
+      ${day.entries.length ? `<ul>${day.entries.map((entry) => `<li>
+        <button type="button" class="weekly-entry" data-course-id="${escapeHtml(entry.courseId)}" data-time-label="${weekdayNames[day.weekday]}・第 ${entry.period} 節" ${entry.className === null ? 'disabled' : ''}>
+          <span class="weekly-period">第 ${entry.period} 節</span>
+          <span class="weekly-details"><span class="weekly-name">${escapeHtml(entry.className ?? '課程已不存在')}</span><span class="weekly-progress">${escapeHtml(entry.progress)}</span></span>
+        </button>
+      </li>`).join('')}</ul>` : '<p class="weekly-empty">本日無課程</p>'}
+    </section>`).join('')}
+  </section>`;
+}
+
 function renderHome(): void {
   if (!state.timetable) {
     timelineContextSignature = '';
@@ -486,6 +560,7 @@ function renderHome(): void {
   root.innerHTML = page('今天上到哪', `
     ${renderToast()}
     ${renderTimeline(timeline, now)}
+    ${renderWeeklyCourses()}
     ${renderDebugControls()}
   `, true);
   bindHomeEvents();
@@ -728,6 +803,12 @@ function bindDebugEvents(): void {
 }
 
 function bindHomeEvents(): void {
+  document.querySelectorAll<HTMLButtonElement>('.weekly-entry').forEach((entry) => {
+    entry.addEventListener('click', () => {
+      const courseId = entry.dataset.courseId;
+      if (courseId && courseById(courseId)) openProgress(courseId, entry.dataset.timeLabel ?? '');
+    });
+  });
   document.querySelector('#open-settings')?.addEventListener('click', () => navigate({ screen: 'settings' }));
   document.querySelector('#undo-progress')?.addEventListener('click', () => { void performUndo(); });
   document.querySelector('#create-timetable')?.addEventListener('click', () => {
@@ -988,6 +1069,8 @@ function render(): void {
     case 'loading': renderLoading(); break;
     case 'login': renderLogin(); break;
     case 'register': renderRegister(); break;
+    case 'recovery':
+    case 'reset-password': renderRecovery(); break;
     case 'home': renderHome(); break;
     case 'timetable': renderTimetable(); break;
     case 'progress': renderProgress(); break;

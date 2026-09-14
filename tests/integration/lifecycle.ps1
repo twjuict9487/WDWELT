@@ -127,6 +127,13 @@ try{
   try{& $Tool update -ConfigPath $ConfigPath -PackagePath $traversal}catch{$traversalFailed=$true}
   Assert-True ($traversalFailed-or$LASTEXITCODE-ne0) 'manifest traversal path failed before activation'
   Assert-True ((Get-Content -Raw $TestRoot\run\host.pid.json|ConvertFrom-Json).pid-eq$pidBeforeValidation) 'manifest traversal rejection kept current host running'
+  $incomplete=Join-Path $PackageRoot 'incomplete-recovery';Copy-Item $success $incomplete -Recurse
+  Remove-Item $incomplete\host\recovery.mjs,$incomplete\db\migrations\002_password_recovery.sql -Force
+  Write-Manifest $incomplete '0.2.1' 'integration-success'
+  $incompleteFailed=$false
+  try{& $Tool update -ConfigPath $ConfigPath -PackagePath $incomplete}catch{$incompleteFailed=$true}
+  Assert-True ($incompleteFailed-or$LASTEXITCODE-ne0) 'manifest-consistent package missing recovery files failed before activation'
+  Assert-True ((Get-Content -Raw $TestRoot\run\host.pid.json|ConvertFrom-Json).pid-eq$pidBeforeValidation) 'incomplete recovery package kept current host running'
   & $Tool update -ConfigPath $ConfigPath -PackagePath $success;Assert-True ($LASTEXITCODE-eq0) 'update succeeded'
   Assert-True (-not(Test-Path $TestRoot\db\legacy-marker.txt)-and(Test-Path $TestRoot\run\previous-db\legacy-marker.txt)) 'update switched database tools with the release'
   $health=Invoke-RestMethod http://127.0.0.1:8080/health/live;Assert-True ($health.version-eq'0.2.1'-and$health.build-eq'integration-success') 'update verified expected version and build'

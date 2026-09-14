@@ -30,6 +30,7 @@ WDWELT 建立的 inbound rule 固定為 TCP `8080`、local `192.168.0.18`、remo
 ## 日常命令
 
 ```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
 $tool = 'C:\ProgramData\WDWELT\tools\wdwelt.ps1'
 $config = 'C:\ProgramData\WDWELT\config\wdwelt.json'
 & $tool start -ConfigPath $config
@@ -42,6 +43,8 @@ $config = 'C:\ProgramData\WDWELT\config\wdwelt.json'
 & $tool recover -ConfigPath $config
 & $tool backup -ConfigPath $config
 ```
+
+`Set-ExecutionPolicy -Scope Process Bypass` 只套用到目前這個 PowerShell process，避免主機的預設 policy 阻擋已安裝的管理指令碼；關閉視窗後即失效。Scheduled Tasks 本身已用相同的 process-level `Bypass` 啟動。
 
 相對 CLI path 以 script 所在目錄解析；config 中的相對 path 以 config 檔所在目錄解析。這使工具可從任意 working directory 執行，也能處理含空白的路徑。
 

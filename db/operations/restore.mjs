@@ -42,6 +42,7 @@ export async function restoreDatabase({ configPath, backupPath, migrationsPath }
   const connection = await mysql.createConnection(databaseConnectionOptions(config));
   try {
     await connection.query('DELETE FROM sessions');
+    await connection.query('DELETE FROM password_reset_tokens');
     await connection.query('SELECT 1');
   } finally { await connection.end(); }
   return { restored: true, backupPath: source, migrations };

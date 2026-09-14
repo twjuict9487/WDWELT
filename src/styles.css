@@ -21,6 +21,19 @@
   text-rendering: optimizeLegibility;
 }
 
+.weekly-overview h2 { font-size: 1.15em; }
+.weekly-day h3 { color: var(--text-muted); font-size: var(--font-small); margin: 20px 0 8px; }
+.weekly-day ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.weekly-entry { width: 100%; min-height: 56px; display: flex; align-items: center; gap: 12px; text-align: left; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
+.weekly-entry:hover { background: var(--surface-raised); }
+.weekly-entry:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.weekly-entry:active { border-color: var(--primary); background: var(--surface-raised); }
+.weekly-entry:disabled { cursor: default; opacity: .65; }
+.weekly-period { flex-shrink: 0; font-size: var(--font-small); color: var(--text-muted); }
+.weekly-details { min-width: 0; display: grid; gap: 4px; }
+.weekly-name, .weekly-progress { overflow-wrap: anywhere; }
+.weekly-progress, .weekly-empty { color: var(--text-muted); font-size: var(--font-small); }
+
 :root[data-theme='light'] {
   --bg: #f5f5f5;
   --surface: #fdfdfd;

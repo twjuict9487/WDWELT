@@ -11,6 +11,7 @@ import { DatabaseManager } from '../../server/app/db.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../../db/core/config.mjs';
 import { runMigrations } from '../../db/operations/migrate.mjs';
 import { runPreflight } from '../../db/operations/preflight.mjs';
+import { testRecoveryApi } from './recovery-api.mjs';
 
 const projectRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const configIndex = process.argv.indexOf('--config');
@@ -91,7 +92,9 @@ try {
 
   database = new DatabaseManager(loadDatabaseConfig(testConfigPath));
   assert(await database.checkReady(), 'temporary database pool became ready');
-  const handler = createApiHandler({ database });
+  const recoveryKey = randomBytes(32).toString('base64url');
+  const logs = [];
+  const handler = createApiHandler({ database, masterRecoveryKey: recoveryKey, log: (...entry) => logs.push(entry) });
   server = createServer(async (request, response) => {
     if (!await handler(request, response)) { response.writeHead(404); response.end(); }
   });
@@ -129,12 +132,16 @@ try {
   assert((await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieA, body: null })).response.status === 400, 'null progress body returned 400 without an internal error');
   const savedProgress = await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieA, body: { progress: 'P.61', note: '3-2 未完成' } });
   assert(savedProgress.response.status === 200 && /Z$/.test(savedProgress.value.progress.updatedAt), 'progress used a backend-generated UTC timestamp');
+  const weeklyState = (await api(base, '/api/timetable', { cookie: cookieA })).value.state;
+  assert(weeklyState.timetable.entries.length === 2 && weeklyState.timetable.entries.every((entry) => weeklyState.progressByCourse[entry.courseId].progress === 'P.61'), 'weekly occurrences receive the same latest progress from the existing account API');
   await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [] } });
   assert((await api(base, `/api/progress/${courseA}`, { cookie: cookieA })).value.progress.progress === 'P.61', 'removing timetable entries preserved course progress');
 
   const loginB = await api(base, '/api/auth/login', { method: 'POST', body: { username: 'TeacherB', password: '12345678' } });
   const cookieB = loginB.cookie;
   assert((await api(base, `/api/progress/${courseA}`, { cookie: cookieB })).response.status === 404, 'user B could not read user A course');
+  assert((await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieB, body: { progress: 'overwrite', note: 'overwrite' } })).response.status === 404, 'user B cannot write user A progress or note');
+  assert((await api(base, '/api/courses', { cookie: cookieB })).value.courses.length === 0 && (await api(base, '/api/timetable?user_id=1', { cookie: cookieB })).value.state.courses.length === 0, 'authenticated identity isolates courses and timetable even with an arbitrary user_id query');
   const meB = await api(base, '/api/auth/me', { cookie: cookieB });
   const userB = meB.value.user.id;
   let crossUserRejected = false;
@@ -156,11 +163,12 @@ try {
   await database.execute('UPDATE sessions SET expires_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE token_hash = ?', [hashSessionToken(secondTokenA)]);
   assert((await api(base, '/api/auth/me', { cookie: secondLoginA.cookie })).response.status === 401, 'expired session was rejected');
 
+  await testRecoveryApi({ base, database, key: recoveryKey, logs, api, check: assert });
   const [tableCount, migrationCount] = await Promise.all([
     database.execute('SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?', [testDatabase]),
     database.execute('SELECT COUNT(*) AS count FROM schema_migrations'),
   ]);
-  assert(Number(tableCount[0].count) === 6 && Number(migrationCount[0].count) === 1, 'migration created five application tables plus schema_migrations');
+  assert(Number(tableCount[0].count) === 7 && Number(migrationCount[0].count) === 2, 'migrations created application tables and the dedicated recovery table');
   console.log(`DB integration passed: ${checks.length} checks in ${testDatabase}`);
   for (const check of checks) console.log(`  PASS ${check}`);
 } finally {

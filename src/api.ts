@@ -37,6 +37,14 @@ export async function login(username: string, password: string): Promise<AuthUse
   return (await request<{ authenticated: true; user: AuthUser }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })).user;
 }
 
+export async function verifyRecovery(username: string, recoveryKey: string): Promise<void> {
+  await request('/api/auth/recovery/verify', { method: 'POST', body: JSON.stringify({ username, recoveryKey }) });
+}
+
+export async function resetPassword(password: string): Promise<void> {
+  await request('/api/auth/recovery/reset', { method: 'POST', body: JSON.stringify({ password }) });
+}
+
 export async function logout(): Promise<void> {
   await request('/api/auth/logout', { method: 'POST' });
 }

@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, loadAccountState, login, saveProgress } from '../src/api';
+import { ApiError, loadAccountState, login, saveProgress, verifyRecovery, resetPassword } from '../src/api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('same-origin API client', () => {
+  it('uses reset-only same-origin requests without returning a login user or token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(verifyRecovery('teacher', '')).resolves.toBeUndefined();
+    await expect(resetPassword('new-password')).resolves.toBeUndefined();
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual(['/api/auth/recovery/verify', '/api/auth/recovery/reset']);
+    expect(fetchMock.mock.calls.every(([, options]) => options.credentials === 'same-origin')).toBe(true);
+  });
   it('sends credentials and parses a successful login', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ authenticated: true, user: { id: 7, username: 'teacher' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
