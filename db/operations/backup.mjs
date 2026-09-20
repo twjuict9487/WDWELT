@@ -16,7 +16,12 @@ export function backupDatabase({ configPath, outputDirectory, label = 'daily', r
   mkdirSync(directory, { recursive: true });
   const safeLabel = /^[a-z0-9-]+$/i.test(label) ? label : 'manual';
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = join(directory, `g2-${safeLabel}-${stamp}.sql`);
+  const repairStamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  let backupPath = join(directory, safeLabel === 'pre-reinstall' ? `pre-reinstall-${repairStamp}.sql` : `g2-${safeLabel}-${stamp}.sql`);
+  if (safeLabel === 'pre-reinstall') {
+    let suffix = 1;
+    while (existsSync(backupPath)) backupPath = join(directory, `pre-reinstall-${repairStamp}-${suffix++}.sql`);
+  }
   const option = createTemporaryOptionFile(config);
   try {
     const result = spawnSync(config.mysqlDumpPath, [
@@ -34,7 +39,7 @@ export function backupDatabase({ configPath, outputDirectory, label = 'daily', r
   const hasMigrationLedger = content.includes(Buffer.from('schema_migrations'));
   const hasDatabase = /CREATE DATABASE[^\r\n]*`g2`/.test(content.toString('utf8')) && content.includes(Buffer.from('USE `g2`;'));
   const completeDump = content.includes(Buffer.from('-- Dump completed on '));
-  if (!content.length || !hasDatabase || !completeDump || (safeLabel !== 'pre-migration' && (!hasUsers || !hasMigrationLedger))) {
+  if (!content.length || !hasDatabase || !completeDump || (!['pre-migration', 'pre-reinstall'].includes(safeLabel) && (!hasUsers || !hasMigrationLedger))) {
     try { unlinkSync(backupPath); } catch { /* preserve verification error */ }
     throw new Error('Backup verification failed; invalid dump was removed');
   }
@@ -43,7 +48,9 @@ export function backupDatabase({ configPath, outputDirectory, label = 'daily', r
     .map((name) => ({ name, path: resolve(directory, name), modified: statSync(resolve(directory, name)).mtimeMs }))
     .filter((item) => item.path.startsWith(`${directory}\\`) || item.path.startsWith(`${directory}/`))
     .sort((a, b) => b.modified - a.modified);
-  for (const stale of candidates.slice(Math.max(1, Number(retain) || 14))) unlinkSync(stale.path);
+  if (safeLabel !== 'pre-reinstall') {
+    for (const stale of candidates.slice(Math.max(1, Number(retain) || 14))) unlinkSync(stale.path);
+  }
   return { path: backupPath, name: basename(backupPath), bytes: content.length, sha256: createHash('sha256').update(content).digest('hex') };
 }
 

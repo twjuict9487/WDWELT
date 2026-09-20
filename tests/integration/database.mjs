@@ -11,6 +11,7 @@ import { DatabaseManager } from '../../server/app/db.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../../db/core/config.mjs';
 import { runMigrations } from '../../db/operations/migrate.mjs';
 import { runPreflight } from '../../db/operations/preflight.mjs';
+import { setRecoveryPassword } from '../../db/core/recovery-config.mjs';
 import { testRecoveryApi } from './recovery-api.mjs';
 
 const projectRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -93,8 +94,9 @@ try {
   database = new DatabaseManager(loadDatabaseConfig(testConfigPath));
   assert(await database.checkReady(), 'temporary database pool became ready');
   const recoveryKey = randomBytes(32).toString('base64url');
+  await setRecoveryPassword(database, recoveryKey);
   const logs = [];
-  const handler = createApiHandler({ database, masterRecoveryKey: recoveryKey, log: (...entry) => logs.push(entry) });
+  const handler = createApiHandler({ database, log: (...entry) => logs.push(entry) });
   server = createServer(async (request, response) => {
     if (!await handler(request, response)) { response.writeHead(404); response.end(); }
   });
@@ -168,7 +170,7 @@ try {
     database.execute('SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?', [testDatabase]),
     database.execute('SELECT COUNT(*) AS count FROM schema_migrations'),
   ]);
-  assert(Number(tableCount[0].count) === 7 && Number(migrationCount[0].count) === 2, 'migrations created application tables and the dedicated recovery table');
+  assert(Number(tableCount[0].count) === 8 && Number(migrationCount[0].count) === 3, 'migrations created application tables and the dedicated recovery table');
   console.log(`DB integration passed: ${checks.length} checks in ${testDatabase}`);
   for (const check of checks) console.log(`  PASS ${check}`);
 } finally {

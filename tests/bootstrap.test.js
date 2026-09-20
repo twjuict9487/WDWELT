@@ -167,10 +167,16 @@ describe('one-file Windows bootstrap', () => {
         { ...base, allowedClientRanges: ['::ffff:10.20.30.18'] },
       ]) {
         writeFileSync(settingsPath, JSON.stringify(settings));
-        expect(() => execFileSync('powershell.exe', [
+        let failure;
+        try { execFileSync('powershell.exe', [
           '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', bootstrapPath,
           '-PlanOnly', '-DeploymentSettingsPath', settingsPath,
-        ], { cwd: tmpdir(), encoding: 'utf8', timeout: 15_000, stdio: 'pipe' })).toThrow();
+        ], { cwd: tmpdir(), encoding: 'utf8', timeout: 15_000, stdio: 'pipe' }); } catch (error) { failure = error; }
+        expect(failure).toBeDefined();
+        expect(failure.stdout).toContain('WDWELT DEPLOYMENT FAILED');
+        expect(failure.stdout).toMatch(/Stage:\s+Preflight/);
+        expect(failure.stdout).toMatch(/Application rollback:\s+NOT REQUIRED/);
+        expect(failure.stdout).toMatch(/Database:\s+UNCHANGED/);
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });

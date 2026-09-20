@@ -25,7 +25,7 @@ WDWELT 建立的 inbound rule 固定為 TCP `8080`、local `192.168.0.18`、remo
 
 目前只知道 `192.168.0.0/22` 已核准。若合法教師裝置位於其他 routed VLAN，這條規則會阻擋連線；必須由 IT 提供額外 CIDR／range，再以 installer 的 `-AllowedRemoteAddress` 明確加入。不可用 `Any`、`Internet` 或 `0.0.0.0/0` 代替。
 
-正式 runtime 只需要本機 Node.js、packaged `node_modules`、production files 與 localhost MySQL，不呼叫外部 API／CDN／updater。WinGet、Node/MySQL 下載與 npm registry 都只是 installation-time dependency；完全無外網部署方式與 offline cache 準備命令見 `install/README.md`。
+正式 runtime 只需要本機 Node.js、packaged `node_modules`、production files 與 localhost MySQL，不呼叫外部 API／CDN／updater。Node／MySQL 需預先備妥；npm cache 的離線部署方式見 `install/README.md`。
 
 ## 日常命令
 
@@ -75,9 +75,9 @@ Task Scheduler 只能在 Windows 已開機時執行。Wake timer 不保證能從
 & $tool rollback -ConfigPath $config
 ```
 
-Update 順序是 package checksum validation → pre-migration DB backup → maintenance lock → stop → migration → activate staged production/host/DB tools → `/health/ready` version/build verification。Migration 是 forward-only；若新版啟動失敗，檔案 release 會 rollback，但已成功的 DB migration 不會自動 downgrade。這是刻意避免 destructive schema rollback。
+一般安裝、更新及修復使用 `npm.cmd run setup` 或 `INSTALL-OR-REPAIR.cmd`；有資料庫設定的 update 也使用同一部署交易。流程先驗證並建立 pre-reinstall 備份，再停止、保存舊應用、替換應用、migration、runtime／Recovery 設定、tasks／firewall 與健康檢查。新版失敗會嘗試還原舊應用及設定；migration 為 forward-only，不自動 downgrade。
 
-Config、credentials、logs、backups 與 runtime state都在 release directories 外。Rollback 只維護 current／previous，不建立無限 history；未知 process 永不會被工具停止。
+Config、credentials、logs、backups 與 runtime state 都在 release directories 外。新部署的復原快照位於 run/deployment-*，故障時保留供復原；`rollback` 命令只適用於已有 current／previous 配對的舊式 release。未知 process 不會被工具停止。
 
 ## Backup 與 restore
 

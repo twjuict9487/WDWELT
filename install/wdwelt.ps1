@@ -14,6 +14,7 @@ param(
   [string]$MySqlServiceName = 'MySQL80',
   [string]$BackupFile,
   [switch]$DryRun,
+  [switch]$NonInteractive,
   [switch]$Apply,
   [switch]$AllowPublicProfile
 )
@@ -148,14 +149,16 @@ function Read-WdweltConfig {
   return $config
 }
 
-$Config = if ($Command -eq 'install' -and -not (Test-Path -LiteralPath $ConfigPath)) {
+$loadedInstallConfig = $null
+if ($Command -eq 'install' -and (Test-Path -LiteralPath $ConfigPath)) {try {$loadedInstallConfig = Read-WdweltConfig} catch {Write-Host 'Installed configuration needs repair.'}}
+$Config = if ($Command -eq 'install' -and -not $loadedInstallConfig) {
   [pscustomobject]@{
     port=8080; bindAddress='0.0.0.0'; canonicalHost=''; canonicalUrl=''; installPath=$InstallPath
     currentPath=(Join-Path $InstallPath 'current'); logPath=(Join-Path $InstallPath 'logs')
     runPath=(Join-Path $InstallPath 'run'); backupPath=(Join-Path $InstallPath 'backups'); healthIntervalSeconds=60; healthTimeoutSeconds=5
     healthFailureThreshold=3; recoveryCooldownSeconds=120; maintenanceLockMinutes=15; logRetentionDays=14; logMaxBytes=5000000
   }
-} else { Read-WdweltConfig }
+} elseif ($loadedInstallConfig) {$loadedInstallConfig} else { Read-WdweltConfig }
 Assert-SafeInstallLayout $Config
 $PidFile = Join-Path $Config.runPath 'host.pid.json'
 $ManualStopFile = Join-Path $Config.runPath 'manual-stop.json'
@@ -312,7 +315,8 @@ function Get-VerifiedHost {
   $basic = Get-Process -Id $record.pid -ErrorAction SilentlyContinue
   if (-not $process -and -not $basic) { Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue; return $null }
   $serverPath = [IO.Path]::GetFullPath((Join-Path $Config.installPath 'tools\host\server.mjs'))
-  if (-not (Test-Path -LiteralPath $serverPath)) { $serverPath = [IO.Path]::GetFullPath((Join-Path $SourceRoot 'server\app\server.mjs')) }
+  $sourceHostPath = [IO.Path]::GetFullPath((Join-Path $SourceRoot 'server\app\server.mjs'))
+  if ($process.CommandLine -and $process.CommandLine.IndexOf($sourceHostPath,[StringComparison]::OrdinalIgnoreCase) -ge 0) {$serverPath=$sourceHostPath}
   $processName = if($process){$process.Name}else{$basic.ProcessName}
   if ($processName -notmatch '^node(\.exe)?$') { return $null }
   $commandVerified = [bool]$process.CommandLine
@@ -737,6 +741,7 @@ function Invoke-Package {
   foreach($databaseDirectory in @('core','operations','migrations')){Copy-Item -LiteralPath (Join-Path $SourceRoot "db\$databaseDirectory") -Destination (Join-Path $output "db\$databaseDirectory") -Recurse}
   Copy-Item (Join-Path $SourceRoot 'install\windows\backup.ps1') (Join-Path $output 'tools\database\backup.ps1')
   Copy-Item (Join-Path $SourceRoot 'install\windows\restore.ps1') (Join-Path $output 'tools\database\restore.ps1')
+  foreach($toolName in @('deployment.ps1','recovery.ps1')) {Copy-Item -LiteralPath (Join-Path $ScriptRoot $toolName) -Destination (Join-Path $output "tools\$toolName")}
   Copy-Item $PSCommandPath (Join-Path $output 'tools\wdwelt.ps1')
   Copy-Item -LiteralPath $DeploymentSettingsPath -Destination (Join-Path $output 'tools\deployment.json')
   $nodeForPackage=(Get-Command node -ErrorAction Stop).Source
@@ -761,7 +766,7 @@ function Validate-Package([string]$Path) {
   if($reparsePoints.Count){throw 'Package 不可包含 symlink／junction／reparse point。'}
   $release=Read-Release $productionRoot
   if($manifest.version -ne $release.version -or $manifest.build -ne $release.build){throw 'Package manifest 與 build metadata 不一致。'}
-  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'recovery.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $databaseRoot 'migrations\002_password_recovery.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
+  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'recovery.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $databaseRoot 'migrations\002_password_recovery.sql'),(Join-Path $databaseRoot 'migrations\003_recovery_config.sql'),(Join-Path $databaseRoot 'operations\recovery.mjs'),(Join-Path $databaseRoot 'operations\repair-runtime.mjs'),(Join-Path $toolsRoot 'deployment.ps1'),(Join-Path $toolsRoot 'recovery.ps1'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Package 缺少必要檔案：$required" }
   }
   $manifestFiles=@($manifest.files)
@@ -794,7 +799,10 @@ function Copy-ProtectedCredential([string]$Source,[string]$Destination) {
   try{
     Copy-Item -LiteralPath $sourcePath -Destination $temporary -Force
     $operator=if($env:USERDOMAIN-and$env:USERNAME){"$env:USERDOMAIN\$env:USERNAME"}else{$env:USERNAME}
-    $grants=@('*S-1-5-18:F','*S-1-5-32-544:F');if($operator){$grants+="${operator}:F"}
+    $actualOperator = (& whoami.exe).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $actualOperator) {throw 'Cannot identify the credential file operator.'}
+    $grants=@('*S-1-5-18:F','*S-1-5-32-544:F')
+    foreach ($account in @($operator,$actualOperator) | Where-Object {$_} | Select-Object -Unique) {$grants+="${account}:F"}
     & icacls.exe $temporary '/inheritance:r' '/grant:r' @grants | Out-Null
     if($LASTEXITCODE-ne0){throw 'Database credential ACL 設定失敗。'}
     Move-Item -LiteralPath $temporary -Destination $Destination -Force
@@ -834,103 +842,6 @@ function Assert-MySqlPrerequisites([string]$ServiceName,[string]$NodeExecutable,
   if(-not$runtimeCheck.ready-or$runtimeCheck.database-ne'g2'){throw 'Runtime database config 未連到 g2。'}
 }
 
-function Invoke-Install {
-  $packageInput=$PackagePath
-  if(-not $packageInput){
-    $packageCandidate=Split-Path -Parent $ScriptRoot
-    if(Test-Path -LiteralPath (Join-Path $packageCandidate 'manifest.json') -PathType Leaf){$packageInput=$packageCandidate}
-    else{throw 'install 需要 -PackagePath；若從 production package 的 tools\wdwelt.ps1 執行，則可自動偵測 package root。'}
-  }
-  $package=Validate-Package $packageInput
-  $installedConfig=Join-Path $InstallPath 'config\wdwelt.json'
-  if(-not $ConfigPath.Equals($installedConfig,[StringComparison]::OrdinalIgnoreCase)){throw "install 的 ConfigPath 必須是目標安裝設定：$installedConfig"}
-  $existingInstall=Test-Path -LiteralPath $installedConfig -PathType Leaf
-  if($existingInstall){
-    $chosen=if($CanonicalHost){$CanonicalHost}else{$ProductionCanonicalHost}
-    if(-not $Config.installPath.Equals($InstallPath,[StringComparison]::OrdinalIgnoreCase)){throw '既有 config 的 installPath 與 -InstallPath 不一致。'}
-    $chosenRemote=if(@($AllowedRemoteAddress).Count){@($AllowedRemoteAddress)}else{@($ProductionAllowedRemoteAddresses)}
-  }else{
-    $chosen=if($CanonicalHost){$CanonicalHost}else{$ProductionCanonicalHost}
-    $chosenRemote=if(@($AllowedRemoteAddress).Count){@($AllowedRemoteAddress)}else{@($ProductionAllowedRemoteAddresses)}
-  }
-  if(-not $chosen.Equals($ProductionCanonicalHost,[StringComparison]::OrdinalIgnoreCase)){throw "Canonical host 必須符合 deployment settings 內的 $ProductionCanonicalHost；拒絕使用 $chosen。"}
-  $chosenRemote=@(Assert-AllowedRemoteAddresses $chosenRemote)
-  if(-not $DryRun -and -not(Test-Administrator)){throw '安裝需要 Administrator 權限。'}
-  $windowsVersion=[Environment]::OSVersion.VersionString
-  $nodeExecutable=if($NodePath){Resolve-InputPath $NodePath}elseif($existingInstall -and $Config.nodePath){[string]$Config.nodePath}else{(Get-Command node -ErrorAction SilentlyContinue).Source}
-  if(-not $nodeExecutable -or -not(Test-Path -LiteralPath $nodeExecutable -PathType Leaf)){throw '找不到 Node runtime；請由使用者明確安裝或以 -NodePath 提供可執行 Node host 的 runtime。'}
-  $runtimeCredentialSource=if($DatabaseConfigPath){Resolve-InputPath $DatabaseConfigPath}elseif($existingInstall-and$Config.databaseConfigPath-and(Test-Path -LiteralPath $Config.databaseConfigPath -PathType Leaf)){[string]$Config.databaseConfigPath}else{$null}
-  $adminCredentialSource=if($AdminDatabaseConfigPath){Resolve-InputPath $AdminDatabaseConfigPath}elseif($existingInstall-and$Config.adminDatabaseConfigPath-and(Test-Path -LiteralPath $Config.adminDatabaseConfigPath -PathType Leaf)){[string]$Config.adminDatabaseConfigPath}else{$null}
-  if(-not$runtimeCredentialSource-or-not$adminCredentialSource){throw 'install 需要既有 runtime 與 administrative database config；請指定 -DatabaseConfigPath 與 -AdminDatabaseConfigPath。'}
-  if(-not(Test-Path -LiteralPath $runtimeCredentialSource -PathType Leaf)-or-not(Test-Path -LiteralPath $adminCredentialSource -PathType Leaf)){throw 'Runtime 或 administrative database config 路徑不存在。'}
-  Write-Host "Windows: $windowsVersion; Node: $(& $nodeExecutable --version)"
-  Write-Host "Install $($package.Release.version) build $($package.Release.build) to $InstallPath; canonical URL http://${chosen}:8080"
-  Write-Host "Deployment environment: $DeploymentEnvironmentName; network=$ProductionCanonicalHost/$ProductionPrefixLength; gateway=$ProductionGateway; firewall remote=$($chosenRemote -join ',')"
-  $productionNetwork = Get-ProductionNetworkState
-  Write-Host "Fixed NIC verification: $(if($productionNetwork.Ready){'ready'}else{"not ready - $($productionNetwork.Reason)"})"
-  if($DryRun){Write-Host "[DRY-RUN] $(if($existingInstall){'驗證既有安裝，必要時透過 update 切換 release；保留 canonical URL 與 port。'}else{'建立全新安裝。'})";Write-Host '[DRY-RUN] 不會建立目錄、Task Scheduler task、Firewall rule 或啟動程序。';return}
-  $productionNetwork = Assert-ProductionNetwork
-  Assert-MySqlPrerequisites $MySqlServiceName $nodeExecutable $adminCredentialSource $runtimeCredentialSource (Join-Path $package.Root 'db')
-  foreach($dir in @('config','logs','run','backups','tools','db')){[IO.Directory]::CreateDirectory((Join-Path $InstallPath $dir))|Out-Null}
-  $installedRuntimeCredential=Join-Path $InstallPath 'config\database.runtime.json'
-  $installedAdminCredential=Join-Path $InstallPath 'config\database.admin.json'
-  if(-not $runtimeCredentialSource.Equals($installedRuntimeCredential,[StringComparison]::OrdinalIgnoreCase)){Copy-ProtectedCredential $runtimeCredentialSource $installedRuntimeCredential}
-  if(-not $adminCredentialSource.Equals($installedAdminCredential,[StringComparison]::OrdinalIgnoreCase)){Copy-ProtectedCredential $adminCredentialSource $installedAdminCredential}
-  $databasePrepared=$false
-  if($existingInstall){
-    $savedConfig=Get-Content -Raw -Encoding UTF8 -LiteralPath $installedConfig|ConvertFrom-Json
-    foreach($property in @{backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;bindAddress=$chosen;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080"}.GetEnumerator()){
-      $savedConfig|Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value -Force
-      $Config|Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value -Force
-    }
-    $savedConfig|ConvertTo-Json|Set-Content -Encoding UTF8 -LiteralPath $installedConfig
-    $currentRelease=Read-Release $Config.currentPath
-    $hostMissing=-not(Test-Path -LiteralPath (Join-Path $Config.installPath 'tools\host\server.mjs') -PathType Leaf)
-    if($hostMissing){throw '既有安裝缺少 production host；為避免建立無法 rollback 的狀態，未覆寫 release。'}
-    if($currentRelease.version -ne $package.Release.version -or $currentRelease.build -ne $package.Release.build){
-      $PackagePath=$package.Root
-      Invoke-Update
-      $databasePrepared=$true
-    }else{Write-Host '既有安裝已是相同 version/build；不重寫 current release。'}
-    if(-not $databasePrepared){
-      Copy-Item -Path (Join-Path $package.Root 'db\*') -Destination (Join-Path $InstallPath 'db') -Recurse -Force
-      foreach($databaseTool in @('backup.ps1','restore.ps1')){Copy-FileAtomically (Join-Path $package.Root "tools\database\$databaseTool") (Join-Path $InstallPath "tools\database\$databaseTool")}
-    }
-  }else{
-    $current=Join-Path $InstallPath 'current';$hostCurrent=Join-Path $InstallPath 'tools\host'
-    if(Test-Path -LiteralPath $current){
-      $entries=@(Get-ChildItem -LiteralPath $current -Force)
-      if($entries.Count){$partial=Read-Release $current;if($partial.version-ne$package.Release.version-or$partial.build-ne$package.Release.build){throw 'InstallPath 含有沒有 config 的不同 release；拒絕覆寫。'}}
-      else{Remove-Item -LiteralPath $current -Force}
-    }
-    if(-not(Test-Path -LiteralPath $current)){Copy-Item -LiteralPath (Join-Path $package.Root 'production') -Destination $current -Recurse}
-    if(Test-Path -LiteralPath $hostCurrent){Remove-Item -LiteralPath $hostCurrent -Recurse -Force}
-    Copy-Item -LiteralPath (Join-Path $package.Root 'host') -Destination $hostCurrent -Recurse
-    Copy-Item -Path (Join-Path $package.Root 'db\*') -Destination (Join-Path $InstallPath 'db') -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $package.Root 'tools\database') -Destination (Join-Path $InstallPath 'tools\database') -Recurse -Force
-    $installed=[ordered]@{port=8080;bindAddress=$chosen;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080";networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;installPath=$InstallPath;currentPath=$current;logPath=(Join-Path $InstallPath 'logs');runPath=(Join-Path $InstallPath 'run');backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;healthIntervalSeconds=60;healthTimeoutSeconds=5;healthFailureThreshold=3;recoveryCooldownSeconds=120;maintenanceLockMinutes=15;logRetentionDays=14;logMaxBytes=5000000}
-    $installed|ConvertTo-Json|Set-Content -Encoding UTF8 -LiteralPath $installedConfig
-  }
-  Copy-FileAtomically (Join-Path $package.Root 'tools\wdwelt.ps1') (Join-Path $InstallPath 'tools\wdwelt.ps1')
-  Copy-FileAtomically (Join-Path $package.Root 'tools\deployment.json') (Join-Path $InstallPath 'tools\deployment.json')
-  if(-not $databasePrepared){
-    & $nodeExecutable (Join-Path $InstallPath 'db\operations\backup.mjs') --config $installedAdminCredential --output (Join-Path $InstallPath 'backups') --label pre-migration
-    if($LASTEXITCODE-ne0){throw 'Pre-migration database backup failed; migration was not started.'}
-    & $nodeExecutable (Join-Path $InstallPath 'db\operations\migrate.mjs') --config $installedAdminCredential --migrations (Join-Path $InstallPath 'db\migrations')
-    if($LASTEXITCODE-ne0){throw 'Database migration failed; WDWELT was not started.'}
-  }
-  & $nodeExecutable (Join-Path $InstallPath 'db\operations\runtime-check.mjs') --config $installedRuntimeCredential --require-schema
-  if($LASTEXITCODE-ne0){throw 'G2 程式帳號缺少資料表或讀寫權限；未啟動 WDWELT。'}
-  $installedTool=Join-Path $InstallPath 'tools\wdwelt.ps1'
-  & $installedTool install-tasks -ConfigPath $installedConfig; if($LASTEXITCODE-ne0){throw 'Task Scheduler 安裝失敗。'}
-  & $installedTool install-firewall -ConfigPath $installedConfig -AllowedRemoteAddress $chosenRemote -AllowPublicProfile:$AllowPublicProfile; if($LASTEXITCODE-ne0){throw 'Firewall rule 安裝失敗。'}
-  & $installedTool start -ConfigPath $installedConfig; if($LASTEXITCODE-ne0){throw 'WDWELT 啟動或 health 驗證失敗。'}
-  & $installedTool network -ConfigPath $installedConfig; if($LASTEXITCODE-ne0){throw 'Production network 最終驗證失敗。'}
-  Remove-LegacyInstalledCredentials
-  & $installedTool status -ConfigPath $installedConfig
-  Write-Host "安裝成功：http://${chosen}:8080"
-}
-
 function Invoke-Update {
   if(-not $PackagePath){throw 'update 需要 -PackagePath。'}; $package=Validate-Package $PackagePath
   $transaction=[guid]::NewGuid().ToString('n');$stage=Join-Path $Config.runPath "stage-$transaction"
@@ -944,7 +855,7 @@ function Invoke-Update {
     Copy-Item -LiteralPath (Join-Path $package.Root 'production') -Destination (Join-Path $stage 'production') -Recurse
     Copy-Item -LiteralPath (Join-Path $package.Root 'host') -Destination (Join-Path $stage 'host') -Recurse
     Copy-Item -LiteralPath (Join-Path $package.Root 'db') -Destination (Join-Path $stage 'db') -Recurse
-    if($Config.adminDatabaseConfigPath-and(Test-Path -LiteralPath $Config.adminDatabaseConfigPath -PathType Leaf)){Invoke-DatabaseBackup 'pre-migration' $package.Root}
+    if($Config.adminDatabaseConfigPath-and(Test-Path -LiteralPath $Config.adminDatabaseConfigPath -PathType Leaf)){Invoke-DatabaseBackup 'pre-reinstall' $package.Root}
     Acquire-MaintenanceLock 'update';$lockAcquired=$true
     Stop-Wdwelt -Maintenance;$serviceStopped=$true
     if($Config.adminDatabaseConfigPath-and(Test-Path -LiteralPath $Config.adminDatabaseConfigPath -PathType Leaf)){Invoke-DatabaseMigration $stage}
@@ -1051,17 +962,19 @@ function Invoke-Rollback {
   }finally{Release-MaintenanceLock}
 }
 
+. (Join-Path $ScriptRoot 'deployment.ps1')
+
 try {
   switch($Command){
     start {Start-Wdwelt}; stop {Stop-Wdwelt}; restart {Restart-Wdwelt}; ensure {if(-not(Test-Path $ManualStopFile)-and-not(Invoke-LiveHealth)){Recover-Wdwelt}}
     health {$health=Invoke-Health;if(-not $health){throw 'Health check failed.'};$health|ConvertTo-Json}
     status {Show-Status}; recover {Recover-Wdwelt}; network {Test-Network}; logs {Show-Logs}
     power {Show-Power -ApplySettings:$Apply}; watchdog {Invoke-Watchdog}; boot {Invoke-Boot}; backup {Invoke-DatabaseBackup 'manual'}; restore {Invoke-DatabaseRestore $BackupFile}
-    daily {Invoke-Watchdog -DailyReset}; install-tasks {Install-Tasks}; install-firewall {Install-Firewall}; package {Invoke-Package}; install {Invoke-Install}; update {Invoke-Update}; rollback {Invoke-Rollback}
+    daily {Invoke-Watchdog -DailyReset}; install-tasks {Install-Tasks}; install-firewall {Install-Firewall}; package {Invoke-Package}; install {Invoke-Install}; update {if ($Config.databaseConfigPath) {$script:InstallPath=$Config.installPath; Invoke-Install} else {Invoke-Update}}; rollback {Invoke-Rollback}
   }
   exit 0
 } catch {
   if(-not $DryRun){Write-OperationLog error $Command $_.Exception.Message}
-  Write-Error $_.Exception.Message
+  Write-Host $_.Exception.Message -ForegroundColor Red
   exit 1
 }
