@@ -1,8 +1,10 @@
 # 今天上到哪
 
-G2 Pilot 新增首頁「本週課程」與登入頁「忘記密碼」。啟用密碼復原前需套用 migration 並設定 backend 的 `WDWELT_MASTER_RECOVERY_KEY`；詳見 [本週課程與密碼復原](docs/G2-Weekly-Recovery.md)。
+G2 Pilot 新增首頁「本週課程」與登入頁「忘記密碼」。主復原密碼以 salted scrypt 保存在資料庫；詳見 [本週課程與密碼復原](docs/G2-Weekly-Recovery.md)。
 
 **已有 Node.js、MySQL 與 G2 帳號的 Windows 10 主機：** 設定 `config/deployment.json` 後執行 `npm.cmd run setup`。不需先跑 `npm install`；詳見 [既有環境快速安裝](install/EXISTING-ENVIRONMENT.md)。
+
+**`environment-setup` 固定校內環境分支：** 在目標機執行根目錄的 `INSTALL-TARGET-ENVIRONMENT.cmd`，使用預設的 `192.168.0.18:8080` 與指定帳號，詳見 [固定環境一鍵安裝](install/TARGET-ENVIRONMENT.md)。
 
 ## WDWELT G2 試行版 0.3.0
 
@@ -489,6 +491,7 @@ Client 不得自行指定其他使用者的 `user_id`。
 | `POST` | `/api/auth/logout`   | 登出       |
 | `GET`  | `/api/auth/me`       | 取得目前登入身分 |
 | `POST` | `/api/auth/recovery/verify` | 驗證帳號與主復原金鑰 |
+| `GET` | `/api/auth/recovery/status` | 取得復原可用狀態 |
 | `POST` | `/api/auth/recovery/reset` | 使用短效權限重設密碼 |
 
 ### 課表
@@ -1010,10 +1013,10 @@ WDWELT 開始從「專案」往「可以部署的軟體」移動。
 
 ## 目前基礎驗證
 
-* **90 / 90 tests 通過**
+* **89 / 89 tests 通過**
 * **TypeScript 型別檢查通過**
 * **正式建置通過**
-* **55 項隔離資料庫、49 項 lifecycle、5 項既有帳號安裝測試通過**
+* **67 項隔離資料庫、49 項 lifecycle、8 項既有帳號與固定環境套件整合測試通過**
 * **30 秒 soak：242 requests、0 failures、無 restart loop 或 orphan process**
 
 ## 現在正在處理

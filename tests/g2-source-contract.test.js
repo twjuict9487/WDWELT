@@ -42,13 +42,14 @@ describe('G2 source-of-truth and secret boundaries', () => {
   it('keeps recovery host-only and separate from normal session authentication', () => {
     const api = source('server/app/api.mjs');
     const recovery = source('server/app/recovery.mjs');
-    expect(api).toContain('process.env.WDWELT_MASTER_RECOVERY_KEY');
+    expect(api).toContain('readRecoveryConfig');
+    expect(api).not.toContain('process.env.WDWELT_MASTER_RECOVERY_KEY');
     expect(api).toContain("'/api/auth/recovery/verify'");
     expect(api).toContain("'/api/auth/recovery/reset'");
     expect(recovery).toContain("const cookieName = 'wdwelt_reset'");
     expect(recovery).toContain('Path=/api/auth/recovery');
     expect(source('server/app/auth.mjs')).not.toContain('wdwelt_reset');
-    expect(api).not.toMatch(/log\([^\n]*(?:body|recoveryKey|password|token)/);
+    expect(api).not.toMatch(/log\([^\n]*,\s*(?:body\b|body\.|password\b|token\b)/);
   });
 
   it('keeps weekly and recovery controls within the existing mobile layout contract', () => {

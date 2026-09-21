@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mysql from '../../db/core/mysql-driver.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig, protectLocalFile } from '../../db/core/config.mjs';
+import { hashPassword } from '../../db/core/password.mjs';
 import { restoreDatabase } from '../../db/operations/restore.mjs';
 
 const configIndex = process.argv.indexOf('--config');
@@ -26,6 +27,7 @@ try {
   finally { await adminConnection.end(); }
   writeFileSync(configPath, `${JSON.stringify({ ...admin, database, configPath: undefined }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   protectLocalFile(configPath);
+  const master = await hashPassword(randomBytes(24).toString('hex'));
   writeFileSync(backupPath, `-- MySQL dump isolated restore fixture
 -- Current Database: \`${database}\`
 USE \`${database}\`;
@@ -40,6 +42,8 @@ CREATE TABLE restore_marker (value INT NOT NULL);
 INSERT INTO restore_marker VALUES (42);
 INSERT INTO users (username, password) VALUES ('restore_teacher', '${randomBytes(16).toString('hex')}');
 ${readFileSync(join(migrationsPath, '002_password_recovery.sql'), 'utf8')}
+${readFileSync(join(migrationsPath, '003_recovery_config.sql'), 'utf8')}
+INSERT INTO recovery_config (id, password_hash, salt, hash_parameters, updated_at) VALUES (1, UNHEX('${master.hash.toString('hex')}'), UNHEX('${master.salt.toString('hex')}'), '${JSON.stringify(master.parameters)}', UTC_TIMESTAMP(3));
 INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (UNHEX('${randomBytes(32).toString('hex')}'), 1, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 10 MINUTE));
 `, 'utf8');
   writeFileSync(wrongDatabaseBackupPath, `-- MySQL dump wrong-database fixture
@@ -59,7 +63,9 @@ CREATE TABLE \`users\` (id INT NOT NULL);
       verification.query('SELECT COUNT(*) AS count FROM sessions'),
       verification.query('SELECT COUNT(*) AS count FROM password_reset_tokens'),
     ]);
-    if (!result.restored || marker[0]?.value !== 42 || Number(migrations[0].count) !== 2 || Number(sessions[0].count) !== 0 || Number(resetTokens[0].count) !== 0) throw new Error('Isolated restore verification failed');
+    if (!result.restored || marker[0]?.value !== 42 || Number(migrations[0].count) !== 3 || Number(sessions[0].count) !== 0 || Number(resetTokens[0].count) !== 0) throw new Error('Isolated restore verification failed');
+    const [recovery] = await verification.query('SELECT password_hash, salt FROM recovery_config');
+    if (!recovery[0]?.password_hash.equals(master.hash) || !recovery[0]?.salt.equals(master.salt)) throw new Error('Recovery configuration was not preserved by restore');
     console.log(`Restore integration passed in ${database}`);
   } finally { await verification.end(); }
 } finally {

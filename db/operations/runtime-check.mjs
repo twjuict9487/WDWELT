@@ -18,6 +18,7 @@ export async function checkRuntimeDatabase(configPath, { requireSchema = false }
         await connection.query(`EXPLAIN UPDATE \`${table}\` SET \`${column}\` = \`${column}\` WHERE 1 = 0`);
         await connection.query(`EXPLAIN DELETE FROM \`${table}\` WHERE 1 = 0`);
       }
+      await connection.query('SELECT updated_at FROM recovery_config LIMIT 0');
       await connection.query('SELECT migration_id, checksum FROM schema_migrations LIMIT 0');
     }
     return { database: 'g2', ready: true };

@@ -10,7 +10,9 @@ import {
   verifyPassword,
 } from './auth.mjs';
 import { DatabaseUnavailableError } from './db.mjs';
-import { readResetCookie, recoveryKeyVerifier, resetCookie, RESET_SECONDS } from './recovery.mjs';
+import { readResetCookie, resetCookie, RESET_SECONDS } from './recovery.mjs';
+
+import { readRecoveryConfig, recoveryStatus, verifyRecoveryPassword } from '../../db/core/recovery-config.mjs';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_CLASS_NAME = 20;
@@ -118,35 +120,51 @@ function validateTimetableBody(body) {
   });
 }
 
-export function createApiHandler({ database, log = () => {}, masterRecoveryKey = process.env.WDWELT_MASTER_RECOVERY_KEY }) {
+export function createApiHandler({ database, log = () => {} }) {
   const sessionSeconds = database.config.sessionDurationHours * 3600;
-  const verifyRecoveryKey = recoveryKeyVerifier(masterRecoveryKey);
-  masterRecoveryKey = undefined;
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (!url.pathname.startsWith('/api/')) return false;
     try {
+      if (url.pathname === '/api/auth/recovery/status' && request.method === 'GET') {
+        const status = await recoveryStatus(database);
+        if (!status.configured) log('warning', 'recovery_config_missing', 'Recovery configuration missing.');
+        sendJson(response, 200, { available: status.configured });
+        return true;
+      }
       if (url.pathname === '/api/auth/recovery/verify' && request.method === 'POST') {
         response.setHeader('Set-Cookie', resetCookie());
-        if (!verifyRecoveryKey) throw new HttpError(503, '密碼復原尚未設定，請聯絡主機管理者。');
         const body = await readJson(request);
-        let normalized;
-        try { normalized = normalizeUsername(body.username); }
-        catch { throw new HttpError(401, '帳號或復原金鑰不正確。'); }
-        const keyMatches = verifyRecoveryKey(body.recoveryKey);
-        const accounts = await database.execute('SELECT id FROM users WHERE normalized_username = ? LIMIT 1', [normalized.normalizedUsername]);
-        if (!keyMatches || !accounts.length) throw new HttpError(401, '帳號或復原金鑰不正確。');
-        const { token, tokenHash } = createSessionToken();
-        await database.execute('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, created_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND), UTC_TIMESTAMP(3))', [tokenHash, accounts[0].id, RESET_SECONDS]);
+        const token = await database.transaction(async (transaction) => {
+          const config = await readRecoveryConfig(transaction, ' FOR SHARE');
+          if (!config) {
+            log('warning', 'recovery_config_missing', 'Recovery configuration missing.');
+            throw new HttpError(503, '密碼復原尚未設定，請聯絡主機管理者。');
+          }
+          const rejected = () => {
+            log('warning', 'recovery_verify_failed', 'Recovery verification rejected.');
+            return new HttpError(401, '帳號或復原密碼不正確。');
+          };
+          let normalized;
+          try { normalized = normalizeUsername(body.username); } catch { throw rejected(); }
+          const matches = await verifyRecoveryPassword(body.recoveryKey, config);
+          const accounts = await transaction.execute('SELECT id FROM users WHERE normalized_username = ? LIMIT 1', [normalized.normalizedUsername]);
+          if (!matches || !accounts.length) throw rejected();
+          const capability = createSessionToken();
+          await transaction.execute('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, created_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND), UTC_TIMESTAMP(3))', [capability.tokenHash, accounts[0].id, RESET_SECONDS]);
+          return capability.token;
+        });
         log('info', 'recovery_verified', 'Password recovery verified.');
         sendJson(response, 200, { resetAllowed: true }, { 'Set-Cookie': resetCookie(token, RESET_SECONDS) });
         return true;
       }
 
       if (url.pathname === '/api/auth/recovery/reset' && request.method === 'POST') {
-        if (!verifyRecoveryKey) throw new HttpError(503, '密碼復原尚未設定，請聯絡主機管理者。');
         const token = readResetCookie(request.headers.cookie);
-        const invalid = () => new HttpError(401, '密碼重設驗證已失效，請重新驗證。');
+        const invalid = () => {
+          log('warning', 'recovery_token_invalid', 'Recovery token rejected.');
+          return new HttpError(401, '密碼重設驗證已失效，請重新驗證。');
+        };
         if (!token) throw invalid();
         const tokenHash = hashSessionToken(token);
         const capabilities = await database.execute('SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND expires_at > UTC_TIMESTAMP(3)', [tokenHash]);
@@ -157,6 +175,7 @@ export function createApiHandler({ database, log = () => {}, masterRecoveryKey =
         catch { throw new HttpError(400, '密碼必須為 3–256 個字元。'); }
         const saved = await hashPassword(password);
         await database.transaction(async (transaction) => {
+          if (!await readRecoveryConfig(transaction, ' FOR SHARE')) throw invalid();
           const userId = capabilities[0].user_id;
           // A user lock serializes resets, including different tokens for the same account.
           const users = await transaction.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
@@ -166,7 +185,7 @@ export function createApiHandler({ database, log = () => {}, masterRecoveryKey =
           await transaction.execute('DELETE FROM password_reset_tokens WHERE user_id = ?', [userId]);
           await transaction.execute('DELETE FROM sessions WHERE user_id = ?', [userId]);
         });
-        log('info', 'recovery_reset', 'Password reset completed.');
+        log('info', 'recovery_reset_success', 'Password reset completed.');
         sendJson(response, 200, { reset: true }, { 'Set-Cookie': [resetCookie(), clearSessionCookie()] });
         return true;
       }
@@ -297,6 +316,11 @@ export function createApiHandler({ database, log = () => {}, masterRecoveryKey =
       }
       throw new HttpError(404, '找不到 API route');
     } catch (error) {
+      if (url.pathname.startsWith('/api/auth/recovery/') && !(error instanceof HttpError)) {
+        log('error', 'recovery_database_error', 'Recovery database operation failed.');
+        sendJson(response, 503, url.pathname === '/api/auth/recovery/status' ? { available: false } : { error: '密碼復原資料目前無法使用' });
+        return true;
+      }
       if (error instanceof HttpError) sendJson(response, error.status, { error: error.message });
       else if (error instanceof DatabaseUnavailableError) sendJson(response, 503, { error: '中央資料目前無法使用' });
       else {

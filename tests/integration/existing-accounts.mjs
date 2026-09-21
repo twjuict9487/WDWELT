@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,8 @@ import { runPreflight } from '../../db/operations/preflight.mjs';
 import { backupDatabase } from '../../db/operations/backup.mjs';
 import { runMigrations } from '../../db/operations/migrate.mjs';
 import { checkRuntimeDatabase } from '../../db/operations/runtime-check.mjs';
+import { prepareTargetEnvironment } from '../../db/operations/target-environment.mjs';
+import { testPackagedRecovery } from './packaged-recovery.mjs';
 
 const mysqld = process.argv[2];
 if (!mysqld) throw new Error('Provide the installed mysqld.exe path; this test creates its own temporary server.');
@@ -77,6 +80,33 @@ try {
   assert.deepEqual((await connection.query("SHOW GRANTS FOR 'school_g2'@'localhost'"))[0], grantsBefore);
   assert.equal((await connection.query("SELECT COUNT(*) AS count FROM g2.users WHERE username='preserved-teacher'"))[0][0].count, 1);
   checks.push('daily backup and repeat migration preserve data, grants, accounts and passwords');
+  const targetDirectory = join(root, 'target-config');
+  await connection.query("ALTER USER 'root'@'localhost' IDENTIFIED BY '11335248'");
+  await prepareTargetEnvironment({port,directory:targetDirectory});
+  await prepareTargetEnvironment({port,directory:targetDirectory});
+  const targetAdmin = JSON.parse(readFileSync(join(targetDirectory,'database.admin.json'),'utf8'));
+  const targetRuntime = JSON.parse(readFileSync(join(targetDirectory,'database.runtime.json'),'utf8'));
+  assert.equal(targetAdmin.user,'root');
+  assert.equal(targetRuntime.user,'wdwelt_app');
+  assert.equal(targetAdmin.password,'11335248');
+  assert.equal(targetRuntime.password,'11335248');
+  assert.equal((await connection.query("SELECT COUNT(*) AS count FROM g2.users WHERE username='preserved-teacher'"))[0][0].count,1);
+  assert.equal((await checkRuntimeDatabase(join(targetDirectory,'database.runtime.json'),{requireSchema:true})).ready,true);
+  checks.push('fixed target credentials can be provisioned twice without deleting g2 data');
+  const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  const targetRecoveryScript = join(repository,'install/target-recovery.ps1');
+  const targetRecovery = () => spawnSync('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',targetRecoveryScript,'-AdminConfig',join(targetDirectory,'database.admin.json')],{encoding:'utf8',windowsHide:true});
+  const initializedRecovery = targetRecovery();
+  assert.equal(initializedRecovery.status,0,initializedRecovery.stdout+initializedRecovery.stderr);
+  const recoveryBefore = (await connection.query('SELECT * FROM g2.recovery_config'))[0];
+  assert.equal(recoveryBefore.length,1);
+  assert.ok(!recoveryBefore[0].password_hash.includes(Buffer.from('11335248')));
+  const repeated = targetRecovery();
+  assert.equal(repeated.status,0,repeated.stdout+repeated.stderr);
+  assert.deepEqual((await connection.query('SELECT * FROM g2.recovery_config'))[0],recoveryBefore);
+  checks.push('fixed master recovery password initializes once as salted hash and survives repeated setup');
+  await testPackagedRecovery({repository,root,admin:join(targetDirectory,'database.admin.json'),runtime:join(targetDirectory,'database.runtime.json'),password:'11335248'});
+  checks.push('packaged host serves recovery and accepts immediate master password rotation');
   console.log(JSON.stringify({ passed: checks.length, checks }, null, 2));
 } finally {
   if (connection) {

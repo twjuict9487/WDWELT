@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { setRecoveryPassword, recoveryStatus } from '../../db/core/recovery-config.mjs';
 import { hashSessionToken } from '../../server/app/auth.mjs';
 
 // No real or fixed recovery key is stored in source/fixtures. The caller generates it for this run.
@@ -38,7 +39,7 @@ export async function testRecoveryApi({ base, database, key, logs, api, check })
   await database.query("CREATE TRIGGER reject_recovery_update BEFORE UPDATE ON users FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'private recovery SQL detail'");
   try {
     const failed = await reset(retry.cookie);
-    check(failed.response.status === 500 && !JSON.stringify(failed.value).includes('private recovery SQL'), 'failed password update exposes no SQL detail');
+    check(failed.response.status === 503 && !JSON.stringify(failed.value).includes('private recovery SQL'), 'failed password update exposes no SQL detail');
     check((await database.execute('SELECT token_hash FROM password_reset_tokens WHERE token_hash = ?', [hashSessionToken(retryToken)])).length === 1, 'failed update rolls back capability consumption');
   } finally { await database.query('DROP TRIGGER reject_recovery_update'); }
   const beforeHash = (await database.execute('SELECT password_hash FROM users WHERE normalized_username = ?', [username.toLowerCase()]))[0].password_hash;
@@ -51,7 +52,20 @@ export async function testRecoveryApi({ base, database, key, logs, api, check })
   const after = (await database.execute('SELECT password_hash, password_parameters FROM users WHERE normalized_username = ?', [username.toLowerCase()]))[0];
   check(!after.password_hash.equals(beforeHash) && String(typeof after.password_parameters === 'string' ? after.password_parameters : JSON.stringify(after.password_parameters)).includes('scrypt'), 'reset uses the existing password hash format');
   check((await verify()).response.status === 200, 'changing a user password does not change the master key');
+  const initial = await recoveryStatus(database);
+  const preserved = await setRecoveryPassword(database, randomBytes(32).toString('hex'), { initializeOnly: true });
+  check(preserved.preserved && (await recoveryStatus(database)).updatedAt.getTime() === initial.updatedAt.getTime(), 'reinstall preserves recovery password and timestamp');
+  const pending = await verify();
+  const nextKey = randomBytes(32).toString('hex');
+  await setRecoveryPassword(database, nextKey);
+  check((await reset(pending.cookie)).response.status === 401, 'rotation invalidates outstanding reset tokens');
+  check((await verify()).response.status === 401 && (await verify(username, nextKey)).response.status === 200, 'rotation takes effect without restarting the API');
+  check(JSON.stringify((await api(base, '/api/auth/recovery/status')).value) === '{"available":true}', 'public recovery status reveals only availability');
+  await database.execute('DELETE FROM recovery_config');
+  check(JSON.stringify((await api(base, '/api/auth/recovery/status')).value) === '{"available":false}', 'missing configuration reports unavailable');
+  check((await verify(username, nextKey)).response.status === 503, 'missing database configuration fails closed');
+  for (const event of ['recovery_config_missing', 'recovery_verify_failed', 'recovery_verified', 'recovery_token_invalid', 'recovery_reset_success', 'recovery_database_error']) check(logs.some((entry) => entry[1] === event), `diagnostic event ${event} recorded`);
   const serialized = JSON.stringify(logs);
-  for (const secret of [key, token, retryToken, oldPassword, newPassword, beforeHash.toString('hex')]) assert.ok(!serialized.includes(secret), 'logs exclude all credentials and tokens');
+  for (const secret of [key, nextKey, token, retryToken, oldPassword, newPassword, beforeHash.toString('hex')]) assert.ok(!serialized.includes(secret), 'logs exclude all credentials and tokens');
   check(true, 'logs contain no recovery key, password, token, hash or SQL detail');
 }

@@ -17,7 +17,10 @@
     "soak:g2": "node tests/integration/soak.mjs",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "recovery:status": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/recovery.ps1 -Mode status",
+    "recovery:set": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/recovery.ps1 -Mode set",
+    "setup:target": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/target-environment.ps1"
   },
   "devDependencies": {
     "typescript": "^5.9.2",

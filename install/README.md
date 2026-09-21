@@ -1276,8 +1276,8 @@ Bootstrap 會拒絕自行重設已存在 account 的密碼。先從安全 backup
 - [ ] `MySQL80` Running／Automatic。
 - [ ] MySQL classic protocol `3306` 與 X Protocol 都只 listen 在 localhost。
 - [ ] `g2` database 存在。
-- [ ] Migration 完成且七個 tables（包含 `password_reset_tokens`）存在。
-- [ ] Machine 環境變數 `WDWELT_MASTER_RECOVERY_KEY` 至少 32 字元、不是 placeholder，且設定後已重新啟動 Windows。
+- [ ] Migration 完成且八個 tables（包含 `password_reset_tokens` 與 `recovery_config`）存在。
+- [ ] `npm.cmd run recovery:status` 顯示主復原密碼已設定；主復原密碼儲存於 `g2.recovery_config`。
 - [ ] `wdwelt_app@localhost` 僅有 CRUD grants。
 - [ ] `npm.cmd test`、typecheck、build 通過。
 - [ ] Package 建立成功。

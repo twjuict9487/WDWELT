@@ -25,6 +25,7 @@ function New-Package([string]$Name,[string]$Version,[string]$Build,[switch]$Brok
   Copy-Item (Join-Path $ProjectRoot 'install\windows\backup.ps1') $root\tools\database\backup.ps1
   Copy-Item (Join-Path $ProjectRoot 'install\windows\restore.ps1') $root\tools\database\restore.ps1
   Copy-Item (Join-Path $ProjectRoot 'install\wdwelt.ps1') $root\tools\wdwelt.ps1
+  Copy-Item (Join-Path $ProjectRoot 'install\recovery.ps1') $root\tools\recovery.ps1
   Copy-Item (Join-Path $ProjectRoot 'config\deployment.json') $root\tools\deployment.json
   & (Get-Command node).Source (Join-Path $ProjectRoot 'scripts\build\copy-production-dependencies.mjs') $ProjectRoot $root\host\node_modules | Out-Host
   if($LASTEXITCODE-ne0){throw 'Could not stage production dependencies.'}

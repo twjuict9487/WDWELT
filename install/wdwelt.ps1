@@ -738,6 +738,7 @@ function Invoke-Package {
   Copy-Item (Join-Path $SourceRoot 'install\windows\backup.ps1') (Join-Path $output 'tools\database\backup.ps1')
   Copy-Item (Join-Path $SourceRoot 'install\windows\restore.ps1') (Join-Path $output 'tools\database\restore.ps1')
   Copy-Item $PSCommandPath (Join-Path $output 'tools\wdwelt.ps1')
+  Copy-Item (Join-Path $SourceRoot 'install\recovery.ps1') (Join-Path $output 'tools\recovery.ps1')
   Copy-Item -LiteralPath $DeploymentSettingsPath -Destination (Join-Path $output 'tools\deployment.json')
   $nodeForPackage=(Get-Command node -ErrorAction Stop).Source
   & $nodeForPackage (Join-Path $SourceRoot 'scripts\build\copy-production-dependencies.mjs') $SourceRoot (Join-Path $output 'host\node_modules')
@@ -761,7 +762,7 @@ function Validate-Package([string]$Path) {
   if($reparsePoints.Count){throw 'Package 不可包含 symlink／junction／reparse point。'}
   $release=Read-Release $productionRoot
   if($manifest.version -ne $release.version -or $manifest.build -ne $release.build){throw 'Package manifest 與 build metadata 不一致。'}
-  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'recovery.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $databaseRoot 'migrations\002_password_recovery.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
+  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'recovery.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'operations\recovery.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $databaseRoot 'migrations\002_password_recovery.sql'),(Join-Path $databaseRoot 'migrations\003_recovery_config.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'recovery.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Package 缺少必要檔案：$required" }
   }
   $manifestFiles=@($manifest.files)
@@ -794,7 +795,10 @@ function Copy-ProtectedCredential([string]$Source,[string]$Destination) {
   try{
     Copy-Item -LiteralPath $sourcePath -Destination $temporary -Force
     $operator=if($env:USERDOMAIN-and$env:USERNAME){"$env:USERDOMAIN\$env:USERNAME"}else{$env:USERNAME}
-    $grants=@('*S-1-5-18:F','*S-1-5-32-544:F');if($operator){$grants+="${operator}:F"}
+    $actualOperator=(& whoami.exe).Trim()
+    if($LASTEXITCODE-ne0-or-not$actualOperator){throw '無法識別執行安裝的 Windows 帳號。'}
+    $grants=@('*S-1-5-18:F','*S-1-5-32-544:F')
+    foreach($account in @($operator,$actualOperator)|Where-Object{$_}|Select-Object -Unique){$grants+="${account}:F"}
     & icacls.exe $temporary '/inheritance:r' '/grant:r' @grants | Out-Null
     if($LASTEXITCODE-ne0){throw 'Database credential ACL 設定失敗。'}
     Move-Item -LiteralPath $temporary -Destination $Destination -Force
@@ -912,6 +916,7 @@ function Invoke-Install {
     $installed|ConvertTo-Json|Set-Content -Encoding UTF8 -LiteralPath $installedConfig
   }
   Copy-FileAtomically (Join-Path $package.Root 'tools\wdwelt.ps1') (Join-Path $InstallPath 'tools\wdwelt.ps1')
+  Copy-FileAtomically (Join-Path $package.Root 'tools\recovery.ps1') (Join-Path $InstallPath 'tools\recovery.ps1')
   Copy-FileAtomically (Join-Path $package.Root 'tools\deployment.json') (Join-Path $InstallPath 'tools\deployment.json')
   if(-not $databasePrepared){
     & $nodeExecutable (Join-Path $InstallPath 'db\operations\backup.mjs') --config $installedAdminCredential --output (Join-Path $InstallPath 'backups') --label pre-migration
@@ -962,6 +967,7 @@ function Invoke-Update {
     if(-not $health -or $health.version -ne $package.Release.version -or $health.build -ne $package.Release.build){throw '新版 /health/ready version/build 驗證失敗。'}
     foreach($databaseTool in @('backup.ps1','restore.ps1')){Copy-FileAtomically (Join-Path $package.Root "tools\database\$databaseTool") (Join-Path $Config.installPath "tools\database\$databaseTool")}
     Copy-FileAtomically (Join-Path $package.Root 'tools\wdwelt.ps1') (Join-Path $Config.installPath 'tools\wdwelt.ps1')
+    Copy-FileAtomically (Join-Path $package.Root 'tools\recovery.ps1') (Join-Path $Config.installPath 'tools\recovery.ps1')
     Write-OperationLog info update "Activated $($health.version) build $($health.build)."
   }catch{
     $updateError=$_.Exception.Message
