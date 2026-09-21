@@ -25,6 +25,7 @@ describe('G2 source-of-truth and secret boundaries', () => {
     const frontend = `${source('src/app.ts')}\n${source('src/api.ts')}\n${source('vite.config.ts')}`;
     expect(frontend).not.toMatch(/VITE_.*(?:PASSWORD|DATABASE|MYSQL)/i);
     expect(frontend).not.toContain('wdwelt_app');
+    expect(frontend).not.toContain('WDWELT_MASTER_RECOVERY_KEY');
     expect(frontend).not.toMatch(/masterRecoveryKey|recoveryKeyVerifier/);
   });
 
@@ -41,14 +42,13 @@ describe('G2 source-of-truth and secret boundaries', () => {
   it('keeps recovery host-only and separate from normal session authentication', () => {
     const api = source('server/app/api.mjs');
     const recovery = source('server/app/recovery.mjs');
-    expect(api).toContain('readRecoveryConfig');
-    expect(api).not.toContain('process.env');
+    expect(api).toContain('process.env.WDWELT_MASTER_RECOVERY_KEY');
     expect(api).toContain("'/api/auth/recovery/verify'");
     expect(api).toContain("'/api/auth/recovery/reset'");
     expect(recovery).toContain("const cookieName = 'wdwelt_reset'");
     expect(recovery).toContain('Path=/api/auth/recovery');
     expect(source('server/app/auth.mjs')).not.toContain('wdwelt_reset');
-    expect(api).not.toMatch(/log\([^\n]*,\s*(?:body|recoveryKey|password|token)\b/);
+    expect(api).not.toMatch(/log\([^\n]*(?:body|recoveryKey|password|token)/);
   });
 
   it('keeps weekly and recovery controls within the existing mobile layout contract', () => {
@@ -64,6 +64,14 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(app).toContain("form.dataset.submitting = 'true'");
     expect(app).toContain("field('recovery-key').value = ''");
     expect(app).toContain("authNotice = '密碼已更新，請使用新密碼登入。'");
+  });
+
+  it('expands database-tool wildcards during installation', () => {
+    const manager = source('install/wdwelt.ps1');
+    expect(manager).not.toMatch(/Copy-Item\s+-LiteralPath\s+\(Join-Path\s+\$package\.Root\s+'db\\\*'\)/);
+    expect(manager.match(/Copy-Item\s+-Path\s+\(Join-Path\s+\$package\.Root\s+'db\\\*'\)/g)).toHaveLength(2);
+    expect(manager).toContain("Join-Path $hostRoot 'recovery.mjs'");
+    expect(manager).toContain("Join-Path $databaseRoot 'migrations\\002_password_recovery.sql'");
   });
 
   it('has no public tunnel, port-forwarding, or external runtime endpoint', () => {
@@ -83,14 +91,14 @@ describe('G2 source-of-truth and secret boundaries', () => {
 
   it('keeps host and MySQL listeners scoped to the configured machine', () => {
     const development = JSON.parse(source('config/development.json'));
-    const manager = source('install/wdwelt.ps1') + source('install/deployment.ps1');
+    const manager = source('install/wdwelt.ps1');
     const preflight = source('db/operations/preflight.mjs');
 
     expect(development.bindAddress).toBe('127.0.0.1');
     expect(manager).toContain('bindAddress=$chosen');
     expect(manager).toContain('$listenerMatches');
     expect(manager).toContain('Production network verification failed');
-    expect(manager).toContain("$stageName = 'LAN Verification'; Test-Network");
+    expect(manager).toContain('& $installedTool network -ConfigPath $installedConfig');
     expect(manager).toContain('$createdProfilesMatch');
     expect(manager).toContain('mysqlx_bind_address');
     expect(manager).toContain("config\\database.runtime.json");

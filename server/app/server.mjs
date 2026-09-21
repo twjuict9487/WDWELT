@@ -12,7 +12,7 @@ import { loadDatabaseConfig } from '../../db/core/config.mjs';
 
 const hostDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = dirname(dirname(hostDir));
-const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql', '003_recovery_config.sql'].map((id) => ({
+const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql'].map((id) => ({
   id,
   checksum: createHash('sha256').update(readFileSync(resolve(projectRoot, 'db', 'migrations', id), 'utf8').replace(/^\uFEFF/, '')).digest('hex'),
 }));

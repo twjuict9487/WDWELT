@@ -286,13 +286,13 @@ function renderRecovery(): void {
   const resetting = screen === 'reset-password';
   root.innerHTML = page(resetting ? '設定新密碼' : '忘記密碼', `
     <form id="recovery-form" class="panel form-panel auth-panel">
-      <p>${resetting ? '驗證有效時間為 10 分鐘，請設定新密碼。' : '請輸入帳號與主機管理者提供的主復原密碼。'}</p>
+      <p>${resetting ? '驗證有效時間為 10 分鐘，請設定新密碼。' : '請輸入帳號與主機管理者提供的主復原金鑰。'}</p>
       ${resetting ? `
         <label>新密碼<input name="password" type="password" minlength="3" maxlength="256" autocomplete="new-password" required /></label>
         <label>確認密碼<input name="confirm-password" type="password" minlength="3" maxlength="256" autocomplete="new-password" required /></label>
       ` : `
         <label>帳號<input name="username" maxlength="50" autocomplete="username" required /></label>
-        <label>主復原密碼<input name="recovery-key" type="password" maxlength="256" autocomplete="off" required /></label>
+        <label>主復原金鑰<input name="recovery-key" type="password" maxlength="4096" autocomplete="off" required /></label>
       `}
       <p id="form-error" class="status error" role="alert" hidden></p>
       <div class="button-stack">

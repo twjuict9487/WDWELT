@@ -39,7 +39,7 @@ $packageTool = Join-Path $FixtureRoot 'artifacts\wdwelt-package\tools\wdwelt.ps1
 [IO.File]::WriteAllText((Join-Path $InstallDirectory 'wdwelt.ps1'), '$global:LASTEXITCODE=0')
 [IO.Directory]::CreateDirectory((Split-Path -Parent $packageTool)) | Out-Null
 [IO.File]::WriteAllText($packageTool, @'
-param([string]$Command,[string]$InstallPath,[string]$CanonicalHost,[string[]]$AllowedRemoteAddress,[string]$NodePath,[string]$MySqlServiceName,[string]$DatabaseConfigPath,[string]$AdminDatabaseConfigPath,[bool]$AllowPublicProfile,[string]$DeploymentSettingsPath,[switch]$DryRun,[bool]$NonInteractive)
+param([string]$Command,[string]$InstallPath,[string]$CanonicalHost,[string[]]$AllowedRemoteAddress,[string]$NodePath,[string]$MySqlServiceName,[string]$DatabaseConfigPath,[string]$AdminDatabaseConfigPath,[bool]$AllowPublicProfile,[string]$DeploymentSettingsPath,[switch]$DryRun)
 if ($DryRun) {
   Add-Content -LiteralPath (Join-Path $InstallPath '..\installer-trace.txt') -Value 'dry-run'
   if ($env:WDWELT_TEST_DRYRUN_FAILURE -eq '1') { $global:LASTEXITCODE=9; return }

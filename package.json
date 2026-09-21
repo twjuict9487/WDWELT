@@ -10,7 +10,6 @@
     "build": "node scripts/build/build-production.mjs",
     "host": "node server/app/server.mjs --config config/development.json",
     "test:g2:lifecycle": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/integration/lifecycle.ps1",
-    "test:g2:deployment": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/integration/deployment-repair.ps1",
     "db:preflight": "node db/operations/preflight.mjs",
     "db:migrate": "node db/operations/migrate.mjs",
     "test:db": "node tests/integration/database.mjs",
@@ -18,9 +17,7 @@
     "soak:g2": "node tests/integration/soak.mjs",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc -b --pretty false",
-    "recovery:status": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/recovery.ps1 -Mode status",
-    "recovery:set": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/recovery.ps1 -Mode set"
+    "typecheck": "tsc -b --pretty false"
   },
   "devDependencies": {
     "typescript": "^5.9.2",

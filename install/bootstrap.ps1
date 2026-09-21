@@ -24,8 +24,6 @@ $ConfigRoot = Join-Path $RepositoryRoot 'config'
 $LocalConfigRoot = Join-Path $ConfigRoot 'local'
 $RuntimeRoot = Join-Path $RepositoryRoot 'runtime'
 $BootstrapLog = $null
-$BootstrapStage = 'Preflight'
-$DeploymentStarted = $false
 $PhaseNumber = 0
 $PhaseCount = 13
 $ProductionCanonicalHost = $null
@@ -41,7 +39,6 @@ function Write-BootstrapLog([string]$Level, [string]$Message) {
 }
 
 function Write-Phase([string]$Message) {
-  $script:BootstrapStage = $Message
   $script:PhaseNumber += 1
   Write-Host "`n[$script:PhaseNumber/$script:PhaseCount] $Message" -ForegroundColor Cyan
   Write-BootstrapLog info "phase=$script:PhaseNumber message=$Message"
@@ -353,7 +350,10 @@ function Ensure-MySqlService {
   $service = Select-MySqlService
   $mysql = if ($service) { Get-MySqlExecutable $service } else { $null }
   if (-not $service -or -not $mysql) {
-    throw 'MySQL Server is missing. Manual installation is required.'
+    if ($ExistingAccounts) { throw '找不到已安裝的 MySQL service/client；請確認 MySQL Server 與 command-line tools 已安裝。' }
+    Open-MySqlInstaller
+    $service = Select-MySqlService
+    $mysql = if ($service) { Get-MySqlExecutable $service } else { $null }
   }
   if (-not $service -or -not $mysql) { throw 'MySQL Server 8.0 尚未完整安裝；請完成 wizard 後重跑 bootstrap。' }
   Assert-SupportedMySql $mysql
@@ -576,18 +576,35 @@ function Assert-ProductionNetwork {
 }
 
 function Show-Plan {
-  Write-Host 'WDWELT one-file bootstrap plan (ExistingAccounts / automatic repair)'
-  Write-Host "Settings: $DeploymentEnvironmentName from $DeploymentSettingsPath"
-  Write-Host "Require $ProductionCanonicalHost/$ProductionPrefixLength and gateway $ProductionGateway"
-  Write-Host "Use $($ProductionAllowedRemoteAddresses -join ', ')-only firewall rule"
-  Write-Host 'Detect install -> build/package -> backup -> replace application -> migrations -> runtime repair -> recovery initialization -> tasks/firewall -> health.'
-  Write-Host 'Existing data, backups and configured recovery password are preserved. Valid runtime credentials are preserved.'
-  Write-Host 'Missing MySQL requires manual installation. No MySQL reinstall or NIC changes.'
-  Write-Host 'The installer never exposes MySQL classic/X Protocol to the LAN.'
+  if ($ExistingAccounts) {
+    Write-Host 'ExistingAccounts：使用已安裝的 Node.js/MySQL 與既有 g2 database；輸入或讀取安裝／備份及程式讀寫帳號。不建立帳號、不重設密碼、不修改權限或 MySQL 設定。'
+    Write-Host '流程：固定網路檢查 → 既有服務／帳號檢查 → npm ci → build/package → installer dry-run → 備份／migration → 安裝及健康檢查。'
+    Write-Host "部署設定：$DeploymentSettingsPath；網址：http://${ProductionCanonicalHost}:8080/"
+    return
+  }
+  Write-Host @"
+WDWELT one-file bootstrap plan
+  Preflight: validate repository and request Administrator through Windows UAC
+  Settings: $DeploymentEnvironmentName from $DeploymentSettingsPath
+  1. Require $ProductionCanonicalHost/$ProductionPrefixLength and gateway $ProductionGateway
+  2. Detect or install Node.js LTS
+  3. Detect MySQL Server 8.0; open the official wizard if absent
+  4. Back up my.ini and bind MySQL classic/X Protocol to 127.0.0.1
+  5. Securely prompt for MySQL root password and create the database
+  6. Install locked npm dependencies (online, or a supplied offline cache)
+  7. Validate the administrative database connection
+  8. Create and verify the least-privilege runtime account
+  9. Skip development tests by default; run them only with -FullValidation
+ 10. Build the production release
+ 11. Create and validate the production package
+ 12. Run the installer dry-run and show a final confirmation
+ 13. Install tasks and a $($ProductionAllowedRemoteAddresses -join ', ')-only firewall rule, then verify URLs
+
+The bootstrap never changes Windows NIC settings, never exposes MySQL classic/X Protocol to the LAN, and never writes passwords to its log.
+"@
 }
 
 function Main {
-  $script:ExistingAccounts = $true
   Assert-RepositoryLayout
   Show-Plan
   if ($PlanOnly) { Write-Host 'PlanOnly：未變更任何檔案、service、package、task 或 firewall。'; return }
@@ -605,18 +622,26 @@ function Main {
   $node = Ensure-Node
   $npm = Get-NpmPath $node
 
-  Write-Phase '檢查既有 MySQL Server 8.0'
+  Write-Phase '檢查或安裝 MySQL Server 8.0'
   $mysqlState = Ensure-MySqlService
   $serviceName = $mysqlState.Service.Name
 
-  Write-Phase '保留 MySQL 設定並準備驗證 localhost binding'
-  Write-Detail 'Preserving MySQL configuration; localhost binding will be verified.'
+  Write-Phase '備份 MySQL 設定並限制到 localhost'
+  if ($ExistingAccounts) { Write-Detail '保留 IT 已配置的 MySQL 設定；正式安裝前驗證 localhost 綁定。' }
+  else {
+    $myIni = Find-MyIni $mysqlState.Service
+    Set-LocalhostBind $myIni $serviceName
+  }
 
-  Write-Phase '讀取既有 administrative config'
-  $installedAdmin = Join-Path $InstallPath 'config\database.admin.json'
-  if (Test-Path -LiteralPath $installedAdmin) {
-    $admin = [pscustomobject]@{Path=$installedAdmin;Config=(Get-Content -Raw -Encoding UTF8 -LiteralPath $installedAdmin | ConvertFrom-Json)}
-  } else { $admin = Read-ExistingAccountConfig 'admin' $mysqlState.MySql $mysqlState.MySqlDump }
+  Write-Phase '建立 administrative config 與 g2 database'
+  if ($ExistingAccounts) {
+    $admin = Read-ExistingAccountConfig 'admin' $mysqlState.MySql $mysqlState.MySqlDump
+    $existingRuntime = Read-ExistingAccountConfig 'runtime' $mysqlState.MySql $mysqlState.MySqlDump ([int]$admin.Config.port)
+    if ($admin.Config.port -ne $existingRuntime.Config.port) { throw '安裝與程式帳號必須連到相同 MySQL port。' }
+  } else {
+    $admin = Read-AdminConfig $mysqlState.MySql $mysqlState.MySqlDump
+    Ensure-G2Database $mysqlState.MySql $admin.Config
+  }
 
   Write-Phase '安裝 WDWELT JavaScript dependencies'
   $npmArguments = @('ci','--include=dev','--no-audit','--fund=false')
@@ -632,9 +657,12 @@ function Main {
   Write-Phase '驗證 administrative database connection'
   Invoke-Node $node @('db\operations\preflight.mjs','--config',$admin.Path) 'database preflight'
 
-  Write-Phase '準備 runtime config 路徑'
+  Write-Phase '建立或驗證最小權限 runtime account'
   $runtimeConfig = Join-Path $LocalConfigRoot 'database.runtime.json'
-  Write-Detail 'Runtime credentials will be verified/preserved or repaired after the database backup.'
+  if (-not $ExistingAccounts) {
+    Invoke-Node $node @('db\operations\bootstrap.mjs','--admin-config',$admin.Path,'--runtime-config',$runtimeConfig) 'runtime account bootstrap'
+  }
+  Invoke-Node $node @('db\operations\runtime-check.mjs','--config',$runtimeConfig) 'runtime database readiness'
 
   Write-Phase '選擇性執行 development validation'
   if ($FullValidation -and -not $SkipTests) {
@@ -658,7 +686,7 @@ function Main {
   $installParameters = @{
     InstallPath=$InstallPath; CanonicalHost=$lanIp; AllowedRemoteAddress=$ProductionAllowedRemoteAddresses
     NodePath=$node; MySqlServiceName=$serviceName; DatabaseConfigPath=$runtimeConfig; AdminDatabaseConfigPath=$admin.Path
-    NonInteractive=[bool]$NonInteractive; AllowPublicProfile=[bool]$AllowPublicProfile; DeploymentSettingsPath=(Join-Path $packageRoot 'tools\deployment.json')
+    AllowPublicProfile=[bool]$AllowPublicProfile; DeploymentSettingsPath=(Join-Path $packageRoot 'tools\deployment.json')
   }
   & $packageTool install @installParameters -DryRun
   if ($LASTEXITCODE -ne 0) { throw 'Installer dry-run 失敗；未執行正式安裝。' }
@@ -670,7 +698,6 @@ function Main {
   Write-Host "iPhone URL：http://${lanIp}:8080/"
   Write-Host "Firewall remote scope：$($ProductionAllowedRemoteAddresses -join ', ') only"
   if (-not (Confirm-Choice "確認建立 scheduled tasks、僅允許 $($ProductionAllowedRemoteAddresses -join ', ') 的 TCP 8080 firewall rule 並啟動 WDWELT？")) { throw '使用者在正式安裝前取消；prerequisites、DB 與 package 已準備完成。' }
-  $script:DeploymentStarted = $true
   & $packageTool install @installParameters
   if ($LASTEXITCODE -ne 0) { throw '正式安裝失敗；請查看上方錯誤與 bootstrap log。' }
 
@@ -697,9 +724,7 @@ try {
   exit 0
 } catch {
   Write-BootstrapLog error $_.Exception.Message
-  $rollbackSummary = if ($DeploymentStarted) {'See deployment stage report above.'} else {'NOT REQUIRED'}
-  $databaseSummary = if ($DeploymentStarted) {'See deployment stage report above; no automatic database restore.'} else {'UNCHANGED'}
-  Write-Host "`nWDWELT DEPLOYMENT FAILED`nStage:`n$BootstrapStage`nReason:`n$($_.Exception.Message)`nApplication rollback:`n$rollbackSummary`nDatabase:`n$databaseSummary" -ForegroundColor Red
+  Write-Host "`n安裝停止：$($_.Exception.Message)" -ForegroundColor Red
   if ($BootstrapLog) { Write-Host "Log：$BootstrapLog" }
   exit 1
 }
