@@ -15,6 +15,7 @@ import { backupDatabase } from '../../db/operations/backup.mjs';
 import { runMigrations } from '../../db/operations/migrate.mjs';
 import { checkRuntimeDatabase } from '../../db/operations/runtime-check.mjs';
 import { prepareTargetEnvironment } from '../../db/operations/target-environment.mjs';
+import { verifyRecoveryPassword } from '../../db/core/recovery-config.mjs';
 import { testPackagedRecovery } from './packaged-recovery.mjs';
 
 const mysqld = process.argv[2];
@@ -103,8 +104,10 @@ try {
   assert.ok(!recoveryBefore[0].password_hash.includes(Buffer.from('11335248')));
   const repeated = targetRecovery();
   assert.equal(repeated.status,0,repeated.stdout+repeated.stderr);
-  assert.deepEqual((await connection.query('SELECT * FROM g2.recovery_config'))[0],recoveryBefore);
-  checks.push('fixed master recovery password initializes once as salted hash and survives repeated setup');
+  const recoveryAfter = (await connection.query('SELECT * FROM g2.recovery_config'))[0];
+  assert.ok(!recoveryAfter[0].password_hash.equals(recoveryBefore[0].password_hash));
+  assert.ok(await verifyRecoveryPassword('11335248',recoveryAfter[0]));
+  checks.push('fixed master recovery password is restored on repeated target setup');
   await testPackagedRecovery({repository,root,admin:join(targetDirectory,'database.admin.json'),runtime:join(targetDirectory,'database.runtime.json'),password:'11335248'});
   checks.push('packaged host serves recovery and accepts immediate master password rotation');
   console.log(JSON.stringify({ passed: checks.length, checks }, null, 2));

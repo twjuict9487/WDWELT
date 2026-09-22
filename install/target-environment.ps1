@@ -6,7 +6,7 @@ Set-Location -LiteralPath $repository
 if($PlanOnly){
   $deployment=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repository 'config\deployment.json')|ConvertFrom-Json
   Write-Host "Target setup: http://$($deployment.hostAddress):8080/; MySQL service: $MySqlServiceName"
-  Write-Host 'Actions: npm ci, create/verify g2, set root/wdwelt_app local credentials, build/package, backup/migrate, install tasks/firewall, verify host, initialize master recovery password if missing.'
+  Write-Host 'Actions: npm ci, create/verify g2, set root/wdwelt_app local credentials, build/package, backup/migrate, install tasks/firewall, verify host, set fixed master recovery password.'
   Write-Host 'PlanOnly: no files, database, services, tasks or firewall were changed.'
   exit 0
 }
@@ -20,7 +20,7 @@ try {
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'bootstrap.ps1') -ExistingAccounts -NonInteractive -MySqlServiceName $MySqlServiceName
   if($LASTEXITCODE-ne0){throw 'Application installation failed.'}
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'target-recovery.ps1')
-  if($LASTEXITCODE-ne0){throw 'Master recovery password initialization failed.'}
+  if($LASTEXITCODE-ne0){throw 'Master recovery password setup failed.'}
   Write-Host 'TARGET ENVIRONMENT READY: http://192.168.0.18:8080/'
 } catch {
   Write-Host "Target environment setup failed: $($_.Exception.Message)"
