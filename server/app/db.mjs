@@ -178,7 +178,7 @@ export class DatabaseManager {
 
 export class UnavailableDatabaseManager {
   constructor(config = {}, log = () => {}) {
-    this.config = { sessionDurationHours: 12, ...config };
+    this.config = { ...config };
     this.log = log;
   }
   get status() { return { ready: false, lastCheck: null }; }

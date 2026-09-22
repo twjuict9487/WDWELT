@@ -32,7 +32,7 @@ export async function bootstrapRuntimeUser({ adminConfigPath, runtimeConfigPath 
         password: randomBytes(32).toString('base64url'),
         connectionLimit: 5, connectTimeoutMs: 3000, readyTimeoutMs: 2000,
         reconnectInitialSeconds: 1, reconnectMaxSeconds: 30,
-        sessionDurationHours: 12, sessionCleanupMinutes: 60,
+        sessionCleanupMinutes: 60,
         mysqlDumpPath: admin.mysqlDumpPath,
         mysqlClientPath: admin.mysqlClientPath,
       };

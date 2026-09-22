@@ -9,6 +9,7 @@ export async function testRecoveryApi({ base, database, key, logs, api, check })
   const newPassword = randomBytes(16).toString('hex');
   await api(base, '/api/auth/register', { method: 'POST', body: { username, password: oldPassword } });
   const normal = await api(base, '/api/auth/login', { method: 'POST', body: { username, password: oldPassword } });
+  const secondNormal = await api(base, '/api/auth/login', { method: 'POST', body: { username, password: oldPassword } });
   const verify = (name = username, recoveryKey = key) => api(base, '/api/auth/recovery/verify', { method: 'POST', body: { username: name, recoveryKey } });
   const reset = (cookie, password = newPassword) => api(base, '/api/auth/recovery/reset', { method: 'POST', cookie, body: { password } });
   const tokenOf = (cookie) => cookie.match(/wdwelt_reset=([^;]+)/)[1];
@@ -48,6 +49,7 @@ export async function testRecoveryApi({ base, database, key, logs, api, check })
   const login = await api(base, '/api/auth/login', { method: 'POST', body: { username, password: newPassword } });
   check(login.response.status === 200 && (await api(base, '/api/auth/login', { method: 'POST', body: { username, password: oldPassword } })).response.status === 401, 'new password logs in and old password fails');
   check((await api(base, '/api/auth/me', { cookie: normal.cookie })).response.status === 401, 'reset revokes previous login sessions');
+  check((await api(base, '/api/auth/me', { cookie: secondNormal.cookie })).response.status === 401, 'reset revokes other device sessions');
   const after = (await database.execute('SELECT password_hash, password_parameters FROM users WHERE normalized_username = ?', [username.toLowerCase()]))[0];
   check(!after.password_hash.equals(beforeHash) && String(typeof after.password_parameters === 'string' ? after.password_parameters : JSON.stringify(after.password_parameters)).includes('scrypt'), 'reset uses the existing password hash format');
   check((await verify()).response.status === 200, 'changing a user password does not change the master key');

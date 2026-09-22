@@ -456,7 +456,7 @@ function Read-AdminConfig([string]$MySqlPath, [string]$MySqlDumpPath) {
     $config = [ordered]@{
       host='127.0.0.1';port=3306;database='g2';user='root';password=$plain
       connectionLimit=2;connectTimeoutMs=3000;readyTimeoutMs=2000;reconnectInitialSeconds=1;reconnectMaxSeconds=30
-      sessionDurationHours=12;sessionCleanupMinutes=60;mysqlDumpPath=$MySqlDumpPath;mysqlClientPath=$MySqlPath
+      sessionCleanupMinutes=60;mysqlDumpPath=$MySqlDumpPath;mysqlClientPath=$MySqlPath
     }
     Write-ProtectedJson $configPath $config
     Write-Detail "已建立並保護 administrative config：$configPath"

@@ -40,7 +40,7 @@ describe('G2 production host', () => {
       expect(await route.text()).toContain('WDWELT');
       const health = await fetch(`${url}/health`);
       expect(health.headers.get('content-type')).toContain('application/json');
-      expect(await health.json()).toMatchObject({ status: 'ok', app: 'ok', database: 'ok', migration: '001_initial.sql', databaseLastCheck: '2026-09-03T00:00:00.000Z', version: '0.3.0', build: 'test-42' });
+      expect(await health.json()).toMatchObject({ status: 'ok', app: 'ok', database: 'ok', migration: '001_initial.sql', databaseLastCheck: '2026-09-03T00:00:00.000Z', version: '0.3.0', build: 'test-42', buildTime: '2026-09-02T00:00:00.000Z' });
       const head = await fetch(`${url}/health`, { method: 'HEAD' });
       expect(head.status).toBe(200);
       expect(await head.text()).toBe('');
@@ -60,6 +60,14 @@ describe('G2 production host', () => {
       expect(full.status).toBe(503);
       expect(await full.json()).toMatchObject({ status: 'degraded', app: 'ok', database: 'unavailable' });
     }, { checkDatabase: async () => false, currentMigration: async () => 'unavailable', databaseStatus: () => ({ lastCheck: '2026-09-03T00:00:00.000Z' }) });
+  });
+
+  it('keeps the artifact build time across host restarts', async () => {
+    const root = fixture();
+    const times = [];
+    await withServer(root, async (url) => { times.push((await (await fetch(`${url}/health/live`)).json()).buildTime); });
+    await withServer(root, async (url) => { times.push((await (await fetch(`${url}/health/live`)).json()).buildTime); });
+    expect(times).toEqual(['2026-09-02T00:00:00.000Z', '2026-09-02T00:00:00.000Z']);
   });
 
   it('does not turn missing assets or health variants into SPA 200', async () => {

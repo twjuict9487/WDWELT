@@ -26,7 +26,7 @@ describe('host-only recovery configuration and distinct capability', () => {
     expect(resetCookie()).toContain('Max-Age=0');
   });
   it('rejects unconfigured recovery before touching the database and does not leak request data', async () => {
-    const handler = createApiHandler({ database: { config: { sessionDurationHours: 12 }, execute: () => { throw new Error('must not query'); } }, masterRecoveryKey: '' });
+    const handler = createApiHandler({ database: { execute: () => { throw new Error('must not query'); } }, masterRecoveryKey: '' });
     const server = createServer(handler);
     await new Promise((done) => server.listen(0, '127.0.0.1', done));
     try {

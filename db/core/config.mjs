@@ -28,7 +28,6 @@ export function loadDatabaseConfig(configPath) {
     readyTimeoutMs: integer(raw.readyTimeoutMs ?? 2000, 'readyTimeoutMs', 250, 30_000),
     reconnectInitialSeconds: integer(raw.reconnectInitialSeconds ?? 1, 'reconnectInitialSeconds', 1, 60),
     reconnectMaxSeconds: integer(raw.reconnectMaxSeconds ?? 30, 'reconnectMaxSeconds', 1, 600),
-    sessionDurationHours: integer(raw.sessionDurationHours ?? 12, 'sessionDurationHours', 1, 168),
     sessionCleanupMinutes: integer(raw.sessionCleanupMinutes ?? 60, 'sessionCleanupMinutes', 1, 1440),
     mysqlDumpPath: raw.mysqlDumpPath ? resolveFromConfig(absolutePath, raw.mysqlDumpPath) : null,
     mysqlClientPath: raw.mysqlClientPath ? resolveFromConfig(absolutePath, raw.mysqlClientPath) : null,
