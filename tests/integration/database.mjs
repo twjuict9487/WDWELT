@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mysql from '../../db/core/mysql-driver.mjs';
 import { createApiHandler } from '../../server/app/api.mjs';
-import { hashSessionToken } from '../../server/app/auth.mjs';
+import { hashSessionToken, SESSION_DURATION_SECONDS } from '../../server/app/auth.mjs';
 import { DatabaseManager } from '../../server/app/db.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../../db/core/config.mjs';
 import { runMigrations } from '../../db/operations/migrate.mjs';
@@ -117,12 +117,15 @@ try {
   const loginA = await api(base, '/api/auth/login', { method: 'POST', body: { username: 'TeacherA', password: '111' } });
   const cookieA = loginA.cookie;
   assert(loginA.response.status === 200 && cookieA?.includes('HttpOnly') && cookieA?.includes('SameSite=Strict') && !cookieA?.includes('Secure'), 'login set the LAN-compatible opaque session cookie');
+  assert(cookieA?.includes(`Max-Age=${SESSION_DURATION_SECONDS}`) && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) <= SESSION_DURATION_SECONDS * 1000 && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) > (SESSION_DURATION_SECONDS - 5) * 1000, 'login expiry and cookie last ten hours from creation');
   assert((await api(base, '/api/auth/me')).response.status === 401, 'unauthenticated me returned 401');
-  assert((await api(base, '/api/auth/me', { cookie: cookieA })).value.user.username === 'TeacherA', 'session cookie restored current identity');
+  const meA = await api(base, '/api/auth/me', { cookie: cookieA });
+  assert(meA.value.user.username === 'TeacherA' && meA.value.expiresAt === loginA.value.expiresAt, 'session cookie restored identity without extending expiry');
 
   const tokenA = cookieToken(cookieA);
-  const storedSession = await database.execute('SELECT token_hash FROM sessions WHERE token_hash = ?', [hashSessionToken(tokenA)]);
+  const storedSession = await database.execute('SELECT token_hash, expires_at FROM sessions WHERE token_hash = ?', [hashSessionToken(tokenA)]);
   assert(storedSession.length === 1 && !Buffer.from(storedSession[0].token_hash).includes(Buffer.from(tokenA)), 'database stored only the session token digest');
+  assert(storedSession[0].expires_at.toISOString() === loginA.value.expiresAt, 'read requests did not change database session expiry');
   const credentialRows = await database.execute("SELECT COUNT(*) AS plaintextColumn FROM information_schema.columns WHERE table_schema = ? AND table_name = 'users' AND column_name = 'password'", [testDatabase]);
   assert(Number(credentialRows[0].plaintextColumn) === 0, 'plaintext password column no longer existed');
 
@@ -132,8 +135,8 @@ try {
   assert(timetable.response.status === 200 && timetable.value.state.courses.length === 1 && timetable.value.state.timetable.entries.length === 2, 'duplicate class entries reused one course');
   const courseA = timetable.value.state.courses[0].courseId;
   assert((await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieA, body: null })).response.status === 400, 'null progress body returned 400 without an internal error');
-  const savedProgress = await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieA, body: { progress: 'P.61', note: '3-2 未完成' } });
-  assert(savedProgress.response.status === 200 && /Z$/.test(savedProgress.value.progress.updatedAt), 'progress used a backend-generated UTC timestamp');
+  const savedProgress = await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieA, body: { progress: 'P.61', note: '3-2 未完成', updatedAt: '2000-01-01T00:00:00.000Z' } });
+  assert(savedProgress.response.status === 200 && /Z$/.test(savedProgress.value.progress.updatedAt) && savedProgress.value.progress.updatedAt !== '2000-01-01T00:00:00.000Z', 'progress ignored client timestamp and returned backend UTC timestamp');
   const weeklyState = (await api(base, '/api/timetable', { cookie: cookieA })).value.state;
   assert(weeklyState.timetable.entries.length === 2 && weeklyState.timetable.entries.every((entry) => weeklyState.progressByCourse[entry.courseId].progress === 'P.61'), 'weekly occurrences receive the same latest progress from the existing account API');
   await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [] } });

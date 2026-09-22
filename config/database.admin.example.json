@@ -9,7 +9,6 @@
   "readyTimeoutMs": 2000,
   "reconnectInitialSeconds": 1,
   "reconnectMaxSeconds": 30,
-  "sessionDurationHours": 12,
   "sessionCleanupMinutes": 60,
   "mysqlDumpPath": "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysqldump.exe",
   "mysqlClientPath": "C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe"

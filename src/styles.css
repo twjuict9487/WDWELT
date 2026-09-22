@@ -463,6 +463,10 @@ textarea:focus-visible,
   line-height: 1.45;
 }
 
+.session-warning {
+  overflow-wrap: anywhere;
+}
+
 .toast {
   display: flex;
   align-items: center;

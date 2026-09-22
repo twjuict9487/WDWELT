@@ -68,7 +68,7 @@ export function createRequestHandler({ root, startedAt = Date.now(), onHealth, c
         const metadata = readRelease(root);
         onHealth?.();
         json(response, 200, {
-          status: 'ok', version: metadata.version, build: metadata.build,
+          status: 'ok', version: metadata.version, build: metadata.build, buildTime: metadata.buildTimestamp,
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000), timestamp: new Date().toISOString(),
           memoryRssBytes: process.memoryUsage().rss,
         }, request.method === 'HEAD');
@@ -85,6 +85,7 @@ export function createRequestHandler({ root, startedAt = Date.now(), onHealth, c
           database: databaseReady ? 'ok' : 'unavailable',
           version: metadata.version,
           build: metadata.build,
+          buildTime: metadata.buildTimestamp,
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
           timestamp: new Date().toISOString(),
           memoryRssBytes: process.memoryUsage().rss,

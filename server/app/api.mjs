@@ -6,6 +6,7 @@ import {
   normalizeUsername,
   readSessionCookie,
   sessionCookie,
+  SESSION_DURATION_SECONDS,
   validatePassword,
   verifyPassword,
 } from './auth.mjs';
@@ -66,14 +67,14 @@ async function authenticatedUser(request, database) {
   const token = readSessionCookie(request.headers.cookie);
   if (!token) throw new HttpError(401, '請先登入');
   const rows = await database.execute(
-    `SELECT u.id, u.username
+    `SELECT u.id, u.username, s.expires_at AS session_expires_at, UTC_TIMESTAMP(3) AS server_time
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ? AND s.expires_at > UTC_TIMESTAMP(3)
       LIMIT 1`,
     [hashSessionToken(token)],
   );
   if (!rows.length) throw new HttpError(401, 'Session 已失效，請重新登入');
-  return { id: Number(rows[0].id), username: rows[0].username, token };
+  return { id: Number(rows[0].id), username: rows[0].username, token, expiresAt: iso(rows[0].session_expires_at), serverTime: iso(rows[0].server_time) };
 }
 
 async function loadState(database, userId, adapter = database) {
@@ -121,7 +122,7 @@ function validateTimetableBody(body) {
 }
 
 export function createApiHandler({ database, log = () => {} }) {
-  const sessionSeconds = database.config.sessionDurationHours * 3600;
+  const sessionSeconds = SESSION_DURATION_SECONDS;
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (!url.pathname.startsWith('/api/')) return false;
@@ -223,8 +224,9 @@ export function createApiHandler({ database, log = () => {} }) {
         }
         const { token, tokenHash } = createSessionToken();
         await database.execute('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND))', [tokenHash, account.id, sessionSeconds]);
+        const [session] = await database.execute('SELECT expires_at, UTC_TIMESTAMP(3) AS server_time FROM sessions WHERE token_hash = ?', [tokenHash]);
         log('info', 'login_success', 'Login succeeded.');
-        sendJson(response, 200, { authenticated: true, user: { id: Number(account.id), username: account.username } }, { 'Set-Cookie': sessionCookie(token, sessionSeconds) });
+        sendJson(response, 200, { authenticated: true, user: { id: Number(account.id), username: account.username }, expiresAt: iso(session.expires_at), serverTime: iso(session.server_time) }, { 'Set-Cookie': sessionCookie(token, sessionSeconds) });
         return true;
       }
 
@@ -238,7 +240,7 @@ export function createApiHandler({ database, log = () => {} }) {
 
       if (url.pathname === '/api/auth/me' && request.method === 'GET') {
         const user = await authenticatedUser(request, database);
-        sendJson(response, 200, { authenticated: true, user: { id: user.id, username: user.username } });
+        sendJson(response, 200, { authenticated: true, user: { id: user.id, username: user.username }, expiresAt: user.expiresAt, serverTime: user.serverTime });
         return true;
       }
 

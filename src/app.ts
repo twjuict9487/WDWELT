@@ -14,6 +14,7 @@ import {
   saveProgress,
   saveTimetable,
   type AuthUser,
+  type AuthSession,
 } from './api';
 import {
   normalizeProgressDraft,
@@ -21,7 +22,8 @@ import {
   timetableDraftSnapshot,
   type ProgressDraft,
 } from './drafts';
-import { loadBuildMetadata, loadHostHealth, type BuildMetadata } from './build-metadata';
+import { formatBuildTime, loadBuildMetadata, loadHostHealth, type BuildMetadata } from './build-metadata';
+import { readRememberedUsername, rememberUsername, sessionRemainingMs, SESSION_WARNING_MS } from './session';
 import {
   loadPreferences,
   savePreferences,
@@ -100,7 +102,7 @@ let dataError: string | null = null;
 let resourceError: string | null = null;
 let buildMetadata: BuildMetadata | null = null;
 let buildMetadataError = false;
-let hostStatus: '正常' | '無法確認' = '無法確認';
+let hostStatus: 'Connected' | 'Host unavailable' = 'Host unavailable';
 let preferences: Preferences;
 try { preferences = loadPreferences(); }
 catch {
@@ -110,6 +112,11 @@ catch {
 let screen: Screen = 'loading';
 let authenticatedUser: AuthUser | null = null;
 let loginUsername = '';
+try { loginUsername = readRememberedUsername(globalThis.localStorage); } catch { /* storage is optional */ }
+let sessionExpiry: AuthSession | null = null;
+let sessionReceivedAt = 0;
+let sessionTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+let accountLoadController: AbortController | null = null;
 let authNotice: string | null = null;
 let timetableIntent: TimetableIntent = 'create';
 let draftGrid = new Map<string, string>();
@@ -187,6 +194,42 @@ function button(id: string, label: string, kind = '', attributes = ''): string {
   return `<button id="${id}" class="button ${kind}" type="button" ${attributes}>${label}</button>`;
 }
 
+function clearSessionTimer(): void {
+  if (sessionTimer !== null) globalThis.clearInterval(sessionTimer);
+  sessionTimer = null;
+  sessionExpiry = null;
+}
+
+function updateSessionWarning(): void {
+  if (!sessionExpiry || !authenticatedUser) return;
+  const remaining = sessionRemainingMs(sessionExpiry, performance.now() - sessionReceivedAt);
+  if (remaining <= 0) {
+    accountLoadController?.abort();
+    clearSessionTimer();
+    authenticatedUser = null;
+    state = structuredClone(EMPTY_STATE);
+    invalidateUndo();
+    clearEditSnapshots();
+    dataError = null;
+    authNotice = '登入狀態已到期，請重新登入。';
+    screen = 'login';
+    currentRoute = { app: 'today-progress-g1', index: 0, screen: 'home' };
+    history.replaceState(currentRoute, '');
+    render();
+    return;
+  }
+  const warning = root.querySelector<HTMLElement>('#session-expiry-warning');
+  if (warning) warning.hidden = remaining > SESSION_WARNING_MS;
+}
+
+function setSessionExpiry(session: AuthSession): void {
+  clearSessionTimer();
+  sessionExpiry = session;
+  sessionReceivedAt = performance.now();
+  sessionTimer = globalThis.setInterval(updateSessionWarning, 10_000);
+  updateSessionWarning();
+}
+
 function page(title: string, content: string, showSettings = false): string {
   return `
     <main class="app-shell">
@@ -195,6 +238,7 @@ function page(title: string, content: string, showSettings = false): string {
         ${showSettings ? '<button id="open-settings" class="header-action" type="button">設定</button>' : ''}
       </header>
       ${renderSystemErrors()}
+      ${authenticatedUser ? '<p id="session-expiry-warning" class="status session-warning" role="status" hidden>登入狀態將於 5 分鐘內到期，請先儲存尚未完成的變更。</p>' : ''}
       ${content}
     </main>
   `;
@@ -212,25 +256,35 @@ function authErrorMessage(error: unknown): string {
   return error instanceof ApiError ? error.message : '伺服器處理失敗，請稍後再試。';
 }
 
-async function loadSignedInState(user: AuthUser): Promise<void> {
-  authenticatedUser = user;
+async function loadSignedInState(session: AuthSession): Promise<void> {
+  accountLoadController?.abort();
+  const controller = new AbortController();
+  accountLoadController = controller;
+  authenticatedUser = session.user;
+  if (sessionExpiry !== session) setSessionExpiry(session);
   screen = 'loading';
   dataError = null;
   render();
   try {
-    state = await loadAccountState();
+    const loaded = await loadAccountState(controller.signal);
+    if (controller.signal.aborted) return;
+    state = loaded;
     dataError = null;
     screen = 'home';
     currentRoute = { app: 'today-progress-g1', index: 0, screen: 'home' };
     history.replaceState(currentRoute, '');
   } catch (error) {
+    if (controller.signal.aborted) return;
     if (error instanceof ApiError && error.status === 401) {
+      clearSessionTimer();
       authenticatedUser = null;
       state = structuredClone(EMPTY_STATE);
       dataError = null;
+      authNotice = '登入狀態已到期，請重新登入。';
       screen = 'login';
     } else dataError = authErrorMessage(error);
   }
+  if (accountLoadController === controller) accountLoadController = null;
   render();
 }
 
@@ -242,7 +296,7 @@ function renderLoading(): void {
       ${authenticatedUser ? button('loading-logout', '登出', 'quiet') : ''}
     </section>
   `);
-  document.querySelector('#retry-account-data')?.addEventListener('click', () => { if (authenticatedUser) void loadSignedInState(authenticatedUser); });
+  document.querySelector('#retry-account-data')?.addEventListener('click', () => { if (sessionExpiry) void loadSignedInState(sessionExpiry); });
   document.querySelector('#loading-logout')?.addEventListener('click', () => { void performLogout(); });
 }
 
@@ -271,10 +325,11 @@ function renderLogin(): void {
     submit?.setAttribute('disabled', '');
     authNotice = null;
     try {
-      const user = await login(username.value, password.value);
-      loginUsername = '';
+      const session = await login(username.value, password.value);
+      loginUsername = session.user.username;
+      try { rememberUsername(globalThis.localStorage, loginUsername); } catch { /* storage is optional */ }
       password.value = '';
-      await loadSignedInState(user);
+      await loadSignedInState(session);
     } catch (error) {
       showFormError(authErrorMessage(error));
       submit?.removeAttribute('disabled');
@@ -318,7 +373,7 @@ function renderRecovery(): void {
       if (resetting) {
         await resetPassword(field('password').value);
         form.reset();
-        loginUsername = '';
+        clearSessionTimer();
         authNotice = '密碼已更新，請使用新密碼登入。';
         screen = 'login';
       } else {
@@ -377,6 +432,8 @@ async function performLogout(): Promise<void> {
   try { await logout(); }
   catch (error) { dataError = authErrorMessage(error); render(); return; }
   authenticatedUser = null;
+  accountLoadController?.abort();
+  clearSessionTimer();
   state = structuredClone(EMPTY_STATE);
   invalidateUndo();
   clearEditSnapshots();
@@ -791,14 +848,14 @@ function bindDebugEvents(): void {
     const time = document.querySelector<HTMLInputElement>('#debug-time')?.value ?? '';
     try {
       debugNow = createDebugInstant(date, time);
-      renderHome();
+      render();
     } catch (error) {
       globalThis.alert(error instanceof Error ? error.message : '無法套用測試時間');
     }
   });
   document.querySelector('#reset-debug-time')?.addEventListener('click', () => {
     debugNow = null;
-    renderHome();
+    render();
   });
 }
 
@@ -1015,9 +1072,10 @@ function renderSettings(): void {
     <section class="settings-build-info" aria-label="版本與 Host 資訊">
       ${buildMetadataError ? '<p class="status error">版本資訊讀取失敗。</p>' : ''}
       <p>${buildMetadata ? `${escapeHtml(buildMetadata.releaseLabel)} ${escapeHtml(buildMetadata.version)}` : '版本資訊無法確認'}</p>
-      <p>Build ${buildMetadata ? escapeHtml(buildMetadata.build) : '無法確認'}</p>
+      <p>Build: ${buildMetadata ? escapeHtml(formatBuildTime(buildMetadata.buildTimestamp)) : '無法確認'}</p>
+      <p>Build ID: ${buildMetadata ? escapeHtml(buildMetadata.build) : '無法確認'}</p>
       <p>目前 URL：${escapeHtml(globalThis.location.href)}</p>
-      <p>Host 狀態：${hostStatus}</p>
+      <p>Host 狀態：<span id="host-status">${hostStatus}</span></p>
     </section>
     ${button('settings-back', '返回首頁', 'quiet')}
   `);
@@ -1076,16 +1134,18 @@ function render(): void {
     case 'progress': renderProgress(); break;
     case 'settings': renderSettings(); break;
   }
+  updateSessionWarning();
 }
 
 async function restoreSession(): Promise<void> {
   screen = 'loading';
   render();
   try {
-    const user = await fetchCurrentUser();
-    await loadSignedInState(user);
+    const session = await fetchCurrentUser();
+    await loadSignedInState(session);
   } catch (error) {
     authenticatedUser = null;
+    clearSessionTimer();
     state = structuredClone(EMPTY_STATE);
     if (error instanceof ApiError && error.status === 401) {
       dataError = null;
@@ -1101,7 +1161,18 @@ async function restoreSession(): Promise<void> {
 function refreshHomeIfScheduleChanged(): void {
   if (screen !== 'home' || !state.timetable || debugNow) return;
   const nextSignature = getTimelineScheduleState(state.timetable, new Date()).signature;
-  if (nextSignature !== timelineContextSignature) renderHome();
+  if (nextSignature !== timelineContextSignature) render();
+}
+
+let healthCheckPending = false;
+async function refreshHostStatus(): Promise<void> {
+  if (healthCheckPending) return;
+  healthCheckPending = true;
+  try {
+    hostStatus = await loadHostHealth();
+    const element = document.querySelector<HTMLElement>('#host-status');
+    if (element) element.textContent = hostStatus;
+  } finally { healthCheckPending = false; }
 }
 
 globalThis.addEventListener('popstate', (event) => {
@@ -1139,9 +1210,9 @@ globalThis.addEventListener('beforeunload', (event) => {
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') refreshHomeIfScheduleChanged();
+  if (document.visibilityState === 'visible') { refreshHomeIfScheduleChanged(); updateSessionWarning(); void refreshHostStatus(); }
 });
-globalThis.addEventListener('pageshow', refreshHomeIfScheduleChanged);
+globalThis.addEventListener('pageshow', () => { refreshHomeIfScheduleChanged(); updateSessionWarning(); void refreshHostStatus(); });
 globalThis.addEventListener('focus', refreshHomeIfScheduleChanged);
 globalThis.setInterval(refreshHomeIfScheduleChanged, 30_000);
 
@@ -1155,9 +1226,6 @@ globalThis.addEventListener('error', (event) => {
 history.replaceState(currentRoute, '');
 render();
 void restoreSession();
-Promise.allSettled([loadBuildMetadata(), loadHostHealth()]).then(([metadataResult, healthResult]) => {
-  if (metadataResult.status === 'fulfilled') buildMetadata = metadataResult.value;
-  else buildMetadataError = true;
-  if (healthResult.status === 'fulfilled') hostStatus = healthResult.value;
-  if (screen === 'settings') render();
-});
+void loadBuildMetadata().then((metadata) => { buildMetadata = metadata; if (screen === 'settings') render(); }, () => { buildMetadataError = true; if (screen === 'settings') render(); });
+void refreshHostStatus();
+globalThis.setInterval(() => { void refreshHostStatus(); }, 30_000);

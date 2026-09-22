@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
+export const SESSION_DURATION_SECONDS = 10 * 60 * 60;
+
 export {
   derivePasswordHash,
   hashPassword,

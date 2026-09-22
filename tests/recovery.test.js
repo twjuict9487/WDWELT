@@ -19,7 +19,7 @@ describe('host-only recovery configuration and distinct capability', () => {
   });
   it('returns only availability when the database is unavailable', async () => {
     const events = [];
-    const handler = createApiHandler({ database: { config: { sessionDurationHours: 12 }, execute: () => { throw new Error('private SQL'); } }, log: (...event) => events.push(event) });
+    const handler = createApiHandler({ database: { execute: () => { throw new Error('private SQL'); } }, log: (...event) => events.push(event) });
     const server = createServer(handler);
     await new Promise((done) => server.listen(0, '127.0.0.1', done));
     try {
