@@ -61,6 +61,16 @@ try{
   Stop-Process -Id $UnknownProcess.Id -Force;$UnknownProcess=$null
   Start-Sleep -Milliseconds 300
 
+  $config.reclaimPort8080=$true
+  $config|ConvertTo-Json|Set-Content -Encoding UTF8 $ConfigPath
+  $UnknownProcess=Start-Process -FilePath $config.nodePath -ArgumentList ('"'+$unknownScript+'"') -WindowStyle Hidden -PassThru
+  Start-Sleep -Milliseconds 500
+  Invoke-Tool watchdog
+  $UnknownProcess.Refresh()
+  Assert-True ($UnknownProcess.HasExited) 'target watchdog force-stopped the conflicting port owner'
+  $UnknownProcess=$null
+  Assert-True ((Invoke-RestMethod http://127.0.0.1:8080/health/live).status-eq'ok') 'target watchdog reclaimed port 8080 and restored WDWELT'
+
   Push-Location $env:SystemRoot
   try{Invoke-Tool start}finally{Pop-Location}
   Assert-True ((Test-Path -LiteralPath (Join-Path $TestRoot 'backups')) -and $true) 'legacy config without backupPath received a safe install-local default'

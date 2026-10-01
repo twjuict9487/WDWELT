@@ -6,7 +6,7 @@ Set-Location -LiteralPath $repository
 if($PlanOnly){
   $deployment=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repository 'config\deployment.json')|ConvertFrom-Json
   Write-Host "Target setup: http://$($deployment.hostAddress):8080/; MySQL service: $MySqlServiceName"
-  Write-Host 'Actions: npm ci, create/verify g2, set root/wdwelt_app local credentials, build/package, backup/migrate, install tasks/firewall, verify host, set fixed master recovery password.'
+  Write-Host 'Actions: npm ci, create/verify g2, set root/wdwelt_app local credentials, build/package, backup/migrate, install startup/watchdog tasks, reclaim TCP 8080 from conflicting processes, verify host, set fixed master recovery password.'
   Write-Host 'PlanOnly: no files, database, services, tasks or firewall were changed.'
   exit 0
 }

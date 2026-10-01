@@ -110,12 +110,14 @@ describe('one-file Windows bootstrap', () => {
     const main = bootstrap.slice(bootstrap.indexOf('function Main'));
 
     expect(settings).toMatchObject({ hostAddress: '192.168.0.18', subnetCidr: '192.168.0.0/22', defaultGateway: '192.168.1.254' });
+    expect(settings.reclaimPort8080).toBe(true);
     expect(settings.allowedClientRanges).toEqual(['192.168.0.0/22']);
     for (const source of [bootstrap, manager]) expect(source).toContain('Read-DeploymentSettings');
     expect(bootstrap).not.toContain('Select-CanonicalHost');
     expect(main.indexOf('$lanIp = Assert-ProductionNetwork')).toBeLessThan(main.indexOf('$node = Ensure-Node'));
     expect(manager).toContain('-LocalAddress ([string]$Config.canonicalHost) -RemoteAddress $remoteAddresses');
     expect(manager).toContain('-EdgeTraversalPolicy Block');
+    expect(manager).toContain('& taskkill.exe /PID ([string][int]$owner.PID) /T /F');
     expect(manager).toContain("tools\\deployment.json");
     expect(manager).toContain('Firewall remote CIDR 必須完整位於 RFC1918 private range');
     expect(manager).not.toMatch(/New-NetFirewallRule[^\r\n]+-RemoteAddress\s+LocalSubnet/);
