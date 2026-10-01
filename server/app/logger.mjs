@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { toTaipeiIsoString } from '../../db/core/time.mjs';
 
 export function createLogger({ logPath, retentionDays = 14, maxBytes = 5_000_000, release = {} }) {
   const directory = resolve(logPath);
@@ -20,7 +21,7 @@ export function createLogger({ logPath, retentionDays = 14, maxBytes = 5_000_000
   };
   return (level, event, message) => {
     rotate();
-    const record = { timestamp: new Date().toISOString(), level, event, version: release.version ?? 'unknown', build: release.build ?? 'unknown', message };
+    const record = { timestamp: toTaipeiIsoString(), level, event, version: release.version ?? 'unknown', build: release.build ?? 'unknown', message };
     try { appendFileSync(active, `${JSON.stringify(record)}\n`, 'utf8'); } catch { /* hosting remains available */ }
   };
 }

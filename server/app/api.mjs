@@ -14,6 +14,7 @@ import { DatabaseUnavailableError } from './db.mjs';
 import { readResetCookie, resetCookie, RESET_SECONDS } from './recovery.mjs';
 
 import { readRecoveryConfig, recoveryStatus, verifyRecoveryPassword } from '../../db/core/recovery-config.mjs';
+import { toTaipeiIsoString } from '../../db/core/time.mjs';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_CLASS_NAME = 20;
@@ -61,15 +62,15 @@ const normalizeClassName = (value) => {
   return { className, normalizedClassName: className.toLocaleLowerCase('zh-Hant') };
 };
 
-const iso = (value) => value instanceof Date ? value.toISOString() : new Date(`${value}Z`.replace('ZZ', 'Z')).toISOString();
+const iso = (value) => toTaipeiIsoString(value);
 
 async function authenticatedUser(request, database) {
   const token = readSessionCookie(request.headers.cookie);
   if (!token) throw new HttpError(401, '請先登入');
   const rows = await database.execute(
-    `SELECT u.id, u.username, s.expires_at AS session_expires_at, UTC_TIMESTAMP(3) AS server_time
+    `SELECT u.id, u.username, s.expires_at AS session_expires_at, CURRENT_TIMESTAMP(3) AS server_time
        FROM sessions s JOIN users u ON u.id = s.user_id
-      WHERE s.token_hash = ? AND s.expires_at > UTC_TIMESTAMP(3)
+      WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP(3)
       LIMIT 1`,
     [hashSessionToken(token)],
   );
@@ -107,6 +108,15 @@ async function loadState(database, userId, adapter = database) {
     courses,
     progressByCourse,
   };
+}
+
+async function deleteUnusedCourses(adapter, userId) {
+  return adapter.execute(
+    `DELETE c FROM courses c
+      LEFT JOIN timetable_entries t ON t.course_id = c.id
+     WHERE c.user_id = ? AND t.course_id IS NULL`,
+    [userId],
+  );
 }
 
 function validateTimetableBody(body) {
@@ -152,7 +162,7 @@ export function createApiHandler({ database, log = () => {} }) {
           const accounts = await transaction.execute('SELECT id FROM users WHERE normalized_username = ? LIMIT 1', [normalized.normalizedUsername]);
           if (!matches || !accounts.length) throw rejected();
           const capability = createSessionToken();
-          await transaction.execute('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, created_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND), UTC_TIMESTAMP(3))', [capability.tokenHash, accounts[0].id, RESET_SECONDS]);
+          await transaction.execute('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, created_at) VALUES (?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND), CURRENT_TIMESTAMP(3))', [capability.tokenHash, accounts[0].id, RESET_SECONDS]);
           return capability.token;
         });
         log('info', 'recovery_verified', 'Password recovery verified.');
@@ -168,7 +178,7 @@ export function createApiHandler({ database, log = () => {} }) {
         };
         if (!token) throw invalid();
         const tokenHash = hashSessionToken(token);
-        const capabilities = await database.execute('SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND expires_at > UTC_TIMESTAMP(3)', [tokenHash]);
+        const capabilities = await database.execute('SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP(3)', [tokenHash]);
         if (!capabilities.length) throw invalid();
         const body = await readJson(request);
         let password;
@@ -180,7 +190,7 @@ export function createApiHandler({ database, log = () => {} }) {
           const userId = capabilities[0].user_id;
           // A user lock serializes resets, including different tokens for the same account.
           const users = await transaction.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
-          const valid = await transaction.execute('SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP(3) FOR UPDATE', [tokenHash, userId]);
+          const valid = await transaction.execute('SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND user_id = ? AND expires_at > CURRENT_TIMESTAMP(3) FOR UPDATE', [tokenHash, userId]);
           if (!users.length || !valid.length) throw invalid();
           await transaction.execute('UPDATE users SET password_salt = ?, password_hash = ?, password_parameters = ? WHERE id = ?', [saved.salt, saved.hash, JSON.stringify(saved.parameters), userId]);
           await transaction.execute('DELETE FROM password_reset_tokens WHERE user_id = ?', [userId]);
@@ -223,8 +233,8 @@ export function createApiHandler({ database, log = () => {} }) {
           throw new HttpError(401, '帳號或密碼錯誤');
         }
         const { token, tokenHash } = createSessionToken();
-        await database.execute('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND))', [tokenHash, account.id, sessionSeconds]);
-        const [session] = await database.execute('SELECT expires_at, UTC_TIMESTAMP(3) AS server_time FROM sessions WHERE token_hash = ?', [tokenHash]);
+        await database.execute('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND))', [tokenHash, account.id, sessionSeconds]);
+        const [session] = await database.execute('SELECT expires_at, CURRENT_TIMESTAMP(3) AS server_time FROM sessions WHERE token_hash = ?', [tokenHash]);
         log('info', 'login_success', 'Login succeeded.');
         sendJson(response, 200, { authenticated: true, user: { id: Number(account.id), username: account.username }, expiresAt: iso(session.expires_at), serverTime: iso(session.server_time) }, { 'Set-Cookie': sessionCookie(token, sessionSeconds) });
         return true;
@@ -263,7 +273,8 @@ export function createApiHandler({ database, log = () => {} }) {
           }
           await transaction.execute('DELETE FROM timetable_entries WHERE user_id = ?', [user.id]);
           for (const entry of savedEntries) await transaction.execute('INSERT INTO timetable_entries (user_id, weekday, period, course_id) VALUES (?, ?, ?, ?)', [user.id, entry.weekday, entry.period, entry.courseId]);
-          await transaction.execute('UPDATE users SET timetable_updated_at = UTC_TIMESTAMP(3) WHERE id = ?', [user.id]);
+          await deleteUnusedCourses(transaction, user.id);
+          await transaction.execute('UPDATE users SET timetable_updated_at = CURRENT_TIMESTAMP(3) WHERE id = ?', [user.id]);
           return loadState(database, user.id, transaction);
         });
         sendJson(response, 200, { state });
@@ -272,6 +283,7 @@ export function createApiHandler({ database, log = () => {} }) {
       if (url.pathname === '/api/timetable' && request.method === 'DELETE') {
         const state = await database.transaction(async (transaction) => {
           await transaction.execute('DELETE FROM timetable_entries WHERE user_id = ?', [user.id]);
+          await deleteUnusedCourses(transaction, user.id);
           await transaction.execute('UPDATE users SET timetable_updated_at = NULL WHERE id = ?', [user.id]);
           return loadState(database, user.id, transaction);
         });
@@ -302,8 +314,8 @@ export function createApiHandler({ database, log = () => {} }) {
           const body = await readJson(request);
           if (typeof body.progress !== 'string' || body.progress.length > MAX_PROGRESS || typeof body.note !== 'string' || body.note.length > MAX_NOTE) throw new HttpError(400, '進度或備註格式不正確');
           await database.execute(
-            `INSERT INTO course_progress (course_id, progress, note, updated_at) VALUES (?, ?, ?, UTC_TIMESTAMP(3))
-             ON DUPLICATE KEY UPDATE progress = VALUES(progress), note = VALUES(note), updated_at = UTC_TIMESTAMP(3)`,
+            `INSERT INTO course_progress (course_id, progress, note, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP(3))
+             ON DUPLICATE KEY UPDATE progress = VALUES(progress), note = VALUES(note), updated_at = CURRENT_TIMESTAMP(3)`,
             [courseId, body.progress.trim(), body.note.trim()],
           );
           const rows = await database.execute('SELECT course_id, progress, note, updated_at FROM course_progress WHERE course_id = ?', [courseId]);

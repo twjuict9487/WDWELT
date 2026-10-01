@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from '../core/mysql-driver.mjs';
+import { createDatabaseConnection } from '../core/mysql-driver.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig, writeProtectedJson } from '../core/config.mjs';
 
 const argument = (name) => {
@@ -13,7 +13,7 @@ const argument = (name) => {
 export async function bootstrapRuntimeUser({ adminConfigPath, runtimeConfigPath }) {
   const admin = loadDatabaseConfig(adminConfigPath);
   if (admin.database !== 'g2') throw new Error('Runtime bootstrap 只允許既有 g2 database');
-  const connection = await mysql.createConnection(databaseConnectionOptions(admin));
+  const connection = await createDatabaseConnection(databaseConnectionOptions(admin));
   let runtimeConfig;
   let createdConfig = false;
   try {
@@ -43,12 +43,12 @@ export async function bootstrapRuntimeUser({ adminConfigPath, runtimeConfigPath 
     if (!localhostAccount) {
       await connection.query(`CREATE USER 'wdwelt_app'@'localhost' IDENTIFIED BY ${connection.escape(runtimeConfig.password)}`);
     } else {
-      const verification = await mysql.createConnection(databaseConnectionOptions(runtimeConfig, { database: undefined }));
+      const verification = await createDatabaseConnection(databaseConnectionOptions(runtimeConfig, { database: undefined }));
       try { await verification.query('SELECT 1'); } finally { await verification.end(); }
     }
     if (localhostAccount) await connection.query("REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'wdwelt_app'@'localhost'");
     await connection.query("GRANT SELECT, INSERT, UPDATE, DELETE ON `g2`.* TO 'wdwelt_app'@'localhost'");
-    const verification = await mysql.createConnection(databaseConnectionOptions(runtimeConfig));
+    const verification = await createDatabaseConnection(databaseConnectionOptions(runtimeConfig));
     try { await verification.query('SELECT 1'); } finally { await verification.end(); }
     const [grants] = await connection.query("SHOW GRANTS FOR 'wdwelt_app'@'localhost'");
     return { database: 'g2', account: 'wdwelt_app@localhost', created: !localhostAccount, configCreated: createdConfig, grants: grants.map((row) => Object.values(row)[0]) };

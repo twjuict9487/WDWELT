@@ -49,6 +49,7 @@ import {
   resolveTimelineSelection,
   shouldCenterTimelineCard,
 } from './timeline';
+import { nextTimetableInputIndex } from './timetable-navigation';
 import type { AppState, Course, CourseProgress, DraftEntry } from './types';
 import { weeklyCourses } from './weekly';
 
@@ -231,16 +232,29 @@ function setSessionExpiry(session: AuthSession): void {
 }
 
 function page(title: string, content: string, showSettings = false): string {
+  const desktopNavigation = authenticatedUser ? `
+    <aside class="desktop-sidebar" aria-label="主要導覽">
+      <div class="desktop-brand">今天上到哪</div>
+      <nav class="desktop-nav">
+        <button class="desktop-nav-item ${screen === 'home' ? 'active' : ''}" type="button" data-desktop-route="home" ${screen === 'home' ? 'aria-current="page"' : ''}><span aria-hidden="true">⌂</span>首頁</button>
+        <button class="desktop-nav-item ${screen === 'timetable' ? 'active' : ''}" type="button" data-desktop-route="timetable" ${screen === 'timetable' ? 'aria-current="page"' : ''}><span aria-hidden="true">▦</span>課表</button>
+        <button class="desktop-nav-item ${screen === 'settings' ? 'active' : ''}" type="button" data-desktop-route="settings" ${screen === 'settings' ? 'aria-current="page"' : ''}><span aria-hidden="true">⚙</span>設定</button>
+      </nav>
+    </aside>
+  ` : '';
   return `
-    <main class="app-shell">
-      <header class="page-header">
-        <h1>${title}</h1>
-        ${showSettings ? '<button id="open-settings" class="header-action" type="button">設定</button>' : ''}
-      </header>
-      ${renderSystemErrors()}
-      ${authenticatedUser ? '<p id="session-expiry-warning" class="status session-warning" role="status" hidden>登入狀態將於 5 分鐘內到期，請先儲存尚未完成的變更。</p>' : ''}
-      ${content}
-    </main>
+    <div class="app-layout ${authenticatedUser ? 'is-authenticated' : ''}">
+      ${desktopNavigation}
+      <main class="app-shell">
+        <header class="page-header">
+          <h1>${title}</h1>
+          ${showSettings ? '<button id="open-settings" class="header-action" type="button">設定</button>' : ''}
+        </header>
+        ${renderSystemErrors()}
+        ${authenticatedUser ? '<p id="session-expiry-warning" class="status session-warning" role="status" hidden>登入狀態將於 5 分鐘內到期，請先儲存尚未完成的變更。</p>' : ''}
+        ${content}
+      </main>
+    </div>
   `;
 }
 
@@ -583,15 +597,15 @@ function renderDebugControls(): string {
 function renderWeeklyCourses(): string {
   return `<section class="panel weekly-overview" aria-labelledby="weekly-heading">
     <h2 id="weekly-heading">本週課程</h2>
-    ${weeklyCourses(state).map((day) => `<section class="weekly-day" aria-label="${weekdayNames[day.weekday]}">
+    <div class="weekly-days">${weeklyCourses(state).map((day) => `<section class="weekly-day" aria-label="${weekdayNames[day.weekday]}">
       <h3>${weekdayNames[day.weekday]}</h3>
       ${day.entries.length ? `<ul>${day.entries.map((entry) => `<li>
-        <button type="button" class="weekly-entry" data-course-id="${escapeHtml(entry.courseId)}" data-time-label="${weekdayNames[day.weekday]}・第 ${entry.period} 節" ${entry.className === null ? 'disabled' : ''}>
+        <button type="button" class="weekly-entry" data-course-id="${escapeHtml(entry.courseId)}" data-time-label="${weekdayNames[day.weekday]}・第 ${entry.period} 節" aria-label="${escapeHtml(entry.className ?? '課程已不存在')}，${weekdayNames[day.weekday]}第 ${entry.period} 節，進度 ${escapeHtml(entry.progress)}" ${entry.className === null ? 'disabled' : ''}>
           <span class="weekly-period">第 ${entry.period} 節</span>
           <span class="weekly-details"><span class="weekly-name">${escapeHtml(entry.className ?? '課程已不存在')}</span><span class="weekly-progress">${escapeHtml(entry.progress)}</span></span>
         </button>
       </li>`).join('')}</ul>` : '<p class="weekly-empty">本日無課程</p>'}
-    </section>`).join('')}
+    </section>`).join('')}</div>
   </section>`;
 }
 
@@ -616,8 +630,10 @@ function renderHome(): void {
   syncTimelineSelection(timeline);
   root.innerHTML = page('今天上到哪', `
     ${renderToast()}
-    ${renderTimeline(timeline, now)}
-    ${renderWeeklyCourses()}
+    <div class="home-dashboard">
+      <div class="home-primary">${renderTimeline(timeline, now)}</div>
+      ${renderWeeklyCourses()}
+    </div>
     ${renderDebugControls()}
   `, true);
   bindHomeEvents();
@@ -756,6 +772,22 @@ function requestBack(): void {
     return;
   }
   history.back();
+}
+
+function bindDesktopNavigation(): void {
+  document.querySelectorAll<HTMLButtonElement>('[data-desktop-route]').forEach((choice) => {
+    choice.addEventListener('click', () => {
+      const destination = choice.dataset.desktopRoute;
+      if (destination === screen) return;
+      const go = (): void => {
+        if (destination === 'home') navigate({ screen: 'home' });
+        else if (destination === 'settings') navigate({ screen: 'settings' });
+        else if (destination === 'timetable') navigate({ screen: 'timetable', intent: state.timetable ? 'edit' : 'create' });
+      };
+      if (hasDirtyEdit()) showDiscardDialog(go);
+      else go();
+    });
+  });
 }
 
 function isAppRoute(value: unknown): value is AppRoute {
@@ -925,7 +957,8 @@ function renderTimetable(): void {
   }).join('');
 
   root.innerHTML = page(title, `
-    <p>直接輸入每一格的班級。空格代表空堂，星期、節次與和平高中時間固定。</p>
+    <p>直接輸入每一格的班級，按 Enter 會移到下一格。空格代表空堂，星期、節次與和平高中時間固定。</p>
+    <p class="small-text">班級從所有格子移除後，系統會刪除不再使用的班級及其進度；其他帳號的同名班級不受影響。</p>
     <div class="timetable-scroll" tabindex="0" aria-label="星期一至星期五、第一至第八節課表">
       <table class="timetable edit-grid">
         <thead>
@@ -936,7 +969,7 @@ function renderTimetable(): void {
     </div>
     <p id="selected-cell-status" class="small-text" role="status">尚未選擇格子。</p>
     <p id="form-error" class="status error" role="alert" hidden></p>
-    <div class="button-stack">
+    <div class="button-stack timetable-actions">
       ${button('clear-cell', '清空選取格子', 'danger', 'disabled')}
       ${button('save-timetable', '儲存課表', 'primary')}
       ${button('timetable-back', '返回', 'quiet')}
@@ -956,6 +989,15 @@ function renderTimetable(): void {
   document.querySelectorAll<HTMLInputElement>('.class-input').forEach((input) => {
     input.addEventListener('focus', () => updateSelectedCell(input));
     input.addEventListener('click', () => updateSelectedCell(input));
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.isComposing) return;
+      event.preventDefault();
+      const inputs = [...document.querySelectorAll<HTMLInputElement>('.class-input')];
+      const index = inputs.indexOf(input);
+      const nextIndex = nextTimetableInputIndex(index, inputs.length, event.shiftKey);
+      const next = nextIndex === null ? undefined : inputs[nextIndex];
+      if (next) { next.focus(); next.select(); }
+    });
   });
   document.querySelector('#clear-cell')?.addEventListener('click', () => {
     if (!selectedGridCell) return;
@@ -1101,7 +1143,7 @@ function renderSettings(): void {
     navigate({ screen: 'timetable', intent: state.timetable ? 'edit' : 'create' });
   });
   document.querySelector('#delete-timetable')?.addEventListener('click', async () => {
-    if (!globalThis.confirm('確定刪除課表？所有班級的既有進度會保留。')) return;
+    if (!globalThis.confirm('確定刪除課表？不再被課表使用的班級及其進度也會一併刪除。')) return;
     try { state = await removeTimetable(); }
     catch (error) { dataError = `${authErrorMessage(error)}；課表未刪除。`; render(); return; }
     timelineContextSignature = '';
@@ -1134,6 +1176,7 @@ function render(): void {
     case 'progress': renderProgress(); break;
     case 'settings': renderSettings(); break;
   }
+  bindDesktopNavigation();
   updateSessionWarning();
 }
 

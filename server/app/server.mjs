@@ -9,10 +9,11 @@ import { createLogger } from './logger.mjs';
 import { createApiHandler } from './api.mjs';
 import { DatabaseManager, UnavailableDatabaseManager } from './db.mjs';
 import { loadDatabaseConfig } from '../../db/core/config.mjs';
+import { toTaipeiIsoString } from '../../db/core/time.mjs';
 
 const hostDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = dirname(dirname(hostDir));
-const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql', '003_recovery_config.sql'].map((id) => ({
+const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql', '003_recovery_config.sql', '004_taipei_timestamps.sql'].map((id) => ({
   id,
   checksum: createHash('sha256').update(readFileSync(resolve(projectRoot, 'db', 'migrations', id), 'utf8').replace(/^\uFEFF/, '')).digest('hex'),
 }));
@@ -90,7 +91,7 @@ server.on('error', (error) => {
   process.exitCode = 1;
 });
 server.listen(port, config.bindAddress ?? '0.0.0.0', () => {
-  writeFileSync(pidPath, `${JSON.stringify({ pid: process.pid, startedAt: new Date(startedAt).toISOString(), root, configPath, version: release.version, build: release.build, controlToken }, null, 2)}\n`);
+  writeFileSync(pidPath, `${JSON.stringify({ pid: process.pid, startedAt: toTaipeiIsoString(new Date(startedAt)), root, configPath, version: release.version, build: release.build, controlToken }, null, 2)}\n`);
   log('info', 'start', `Listening on ${config.bindAddress ?? '0.0.0.0'}:${port}`);
   console.log(`WDWELT ${release.version} build ${release.build} listening on ${config.bindAddress ?? '0.0.0.0'}:${port}`);
 });

@@ -1,8 +1,9 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from '../core/mysql-driver.mjs';
+import { createDatabaseConnection } from '../core/mysql-driver.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
 import { recoveryStatus, setRecoveryPassword } from '../core/recovery-config.mjs';
+import { formatTaipeiDateTime } from '../core/time.mjs';
 
 const args = process.argv.slice(2);
 const mode = args[0];
@@ -13,7 +14,7 @@ let database;
 let connection;
 try {
   if (!['status', 'set', 'initialize'].includes(mode)) throw new Error('Invalid command.');
-  connection = await mysql.createConnection(databaseConnectionOptions(loadDatabaseConfig(configPath)));
+  connection = await createDatabaseConnection(databaseConnectionOptions(loadDatabaseConfig(configPath)));
   database = {
     execute: async (...arguments_) => (await connection.execute(...arguments_))[0],
     transaction: async (operation) => {
@@ -27,7 +28,7 @@ try {
     if (args.includes('--json')) console.log(JSON.stringify(status));
     else {
       console.log(`Recovery configured: ${status.configured ? 'YES' : 'NO'}`);
-      console.log(`Last updated: ${status.updatedAt instanceof Date ? status.updatedAt.toISOString() : status.updatedAt ?? '—'}`);
+      console.log(`Last updated (Asia/Taipei): ${status.updatedAt ? formatTaipeiDateTime(status.updatedAt) : '—'}`);
     }
   } else {
     if (!args.includes('--stdin')) throw new Error('Secure input required.');

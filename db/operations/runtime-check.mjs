@@ -1,13 +1,13 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from '../core/mysql-driver.mjs';
+import { createDatabaseConnection } from '../core/mysql-driver.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
 
 const argument = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : null; };
 
 export async function checkRuntimeDatabase(configPath, { requireSchema = false } = {}) {
   const config = loadDatabaseConfig(configPath);
-  const connection = await mysql.createConnection(databaseConnectionOptions(config));
+  const connection = await createDatabaseConnection(databaseConnectionOptions(config));
   try {
     const [rows] = await connection.query('SELECT DATABASE() AS databaseName, 1 AS ready');
     if (rows[0]?.databaseName !== 'g2' || Number(rows[0]?.ready) !== 1) throw new Error('Runtime connection did not reach g2');

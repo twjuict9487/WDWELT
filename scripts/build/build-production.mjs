@@ -2,12 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toTaipeiIsoString } from '../../db/core/time.mjs';
 
 const projectRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const packageJson = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
 execFileSync(process.execPath, [join(projectRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-b'], { cwd: projectRoot, stdio: 'inherit' });
 execFileSync(process.execPath, [join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], { cwd: projectRoot, stdio: 'inherit' });
-const timestamp = new Date().toISOString();
+const timestamp = toTaipeiIsoString();
 const build = process.env.WDWELT_BUILD_NUMBER?.trim()
   || timestamp.replace(/[-:TZ.]/g, '').slice(0, 14);
 const metadata = {

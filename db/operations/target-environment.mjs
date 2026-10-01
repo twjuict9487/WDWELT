@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from '../core/mysql-driver.mjs';
+import { createDatabaseConnection } from '../core/mysql-driver.mjs';
 import { writeProtectedJson } from '../core/config.mjs';
 
 // Fixed credentials for the dedicated environment-setup branch.
@@ -9,14 +9,14 @@ const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const configDirectory = resolve(root, 'config/local');
 
 export async function prepareTargetEnvironment({port=3306, directory=configDirectory}={}) {
-  const connection = await mysql.createConnection({host:'127.0.0.1', port, user:'root', password, connectTimeout:3000});
+  const connection = await createDatabaseConnection({host:'127.0.0.1', port, user:'root', password, connectTimeout:3000});
   try {
     await connection.query('CREATE DATABASE IF NOT EXISTS `g2` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci');
     await connection.query(`CREATE USER IF NOT EXISTS 'wdwelt_app'@'localhost' IDENTIFIED BY ${connection.escape(password)}`);
     await connection.query(`ALTER USER 'wdwelt_app'@'localhost' IDENTIFIED BY ${connection.escape(password)} ACCOUNT UNLOCK`);
     await connection.query("REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'wdwelt_app'@'localhost'");
     await connection.query("GRANT SELECT, INSERT, UPDATE, DELETE ON `g2`.* TO 'wdwelt_app'@'localhost'");
-    const runtime = await mysql.createConnection({host:'127.0.0.1',port,database:'g2',user:'wdwelt_app',password,connectTimeout:3000});
+    const runtime = await createDatabaseConnection({host:'127.0.0.1',port,database:'g2',user:'wdwelt_app',password,connectTimeout:3000});
     try {await runtime.query('SELECT 1');} finally {await runtime.end();}
     const common = {host:'127.0.0.1',port,database:'g2',password};
     writeProtectedJson(resolve(directory,'database.admin.json'),{...common,user:'root'});

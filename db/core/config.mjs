@@ -44,7 +44,7 @@ export function databaseConnectionOptions(config, extras = {}) {
     user: config.user,
     password: config.password,
     connectTimeout: config.connectTimeoutMs,
-    timezone: 'Z',
+    timezone: '+08:00',
     charset: 'utf8mb4',
     ...extras,
   };

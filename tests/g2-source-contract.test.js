@@ -67,6 +67,33 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(app).toContain("authNotice = '密碼已更新，請使用新密碼登入。'");
   });
 
+  it('switches to a wider desktop layout while keeping the phone layout as the base', () => {
+    const css = source('src/styles.css');
+    const app = source('src/app.ts');
+    expect(app).toContain('<div class="weekly-days">');
+    expect(app).toContain('<div class="button-stack timetable-actions">');
+    expect(css).toMatch(/@media\s*\(min-width:\s*768px\)[\s\S]*\.app-shell\s*\{[^}]*max-width:\s*960px;/);
+    expect(css).toMatch(/@media\s*\(min-width:\s*768px\)[\s\S]*\.weekly-days\s*\{[^}]*grid-template-columns:\s*repeat\(2,/);
+    expect(css).toMatch(/@media\s*\(min-width:\s*768px\)[\s\S]*\.timetable-actions\s*\{[^}]*flex-direction:\s*row;/);
+    expect(css).toMatch(/@media\s*\(min-width:\s*768px\)[\s\S]*\.timetable-actions \.button\s*\{[^}]*flex:\s*1 1 0;[^}]*width:\s*auto;/);
+    expect(app).toContain('class="desktop-sidebar"');
+    expect(app).toContain('data-desktop-route="home"');
+    expect(app).toContain('class="home-dashboard"');
+    expect(css).toMatch(/@media\s*\(min-width:\s*960px\)[\s\S]*\.app-layout\.is-authenticated\s*\{[^}]*grid-template-columns:\s*220px minmax\(0, 1fr\);/);
+    expect(css).toMatch(/@media\s*\(min-width:\s*960px\)[\s\S]*\.desktop-sidebar\s*\{[^}]*position:\s*sticky;[^}]*display:\s*flex;/);
+    expect(css).toMatch(/@media\s*\(min-width:\s*960px\)[\s\S]*\.home-dashboard\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:/);
+    expect(css).toMatch(/@media\s*\(min-width:\s*960px\)[\s\S]*\.home-dashboard \.weekly-days\s*\{[^}]*grid-template-columns:\s*repeat\(5,/);
+    expect(css).toMatch(/@media\s*\(min-width:\s*960px\)[\s\S]*\.home-dashboard \.weekly-period\s*\{[^}]*display:\s*none;/);
+    expect(app).toContain('aria-label="${escapeHtml(entry.className');
+  });
+
+  it('removes only uniquely owned courses after their last timetable reference is gone', () => {
+    const api = source('server/app/api.mjs');
+    expect(api).toContain('LEFT JOIN timetable_entries t ON t.course_id = c.id');
+    expect(api).toContain('WHERE c.user_id = ? AND t.course_id IS NULL');
+    expect(api.match(/await deleteUnusedCourses\(transaction, user\.id\)/g)).toHaveLength(2);
+  });
+
   it('expands database-tool wildcards during installation', () => {
     const manager = source('install/wdwelt.ps1');
     expect(manager).not.toMatch(/Copy-Item\s+-LiteralPath\s+\(Join-Path\s+\$package\.Root\s+'db\\\*'\)/);

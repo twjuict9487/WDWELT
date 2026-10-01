@@ -20,10 +20,10 @@ export async function setRecoveryPassword(database, password, { initializeOnly =
   const saved = await hashPassword(password);
   return database.transaction(async (transaction) => {
     // Serialize initialization and rotation, including concurrent installers.
-    await transaction.execute('INSERT IGNORE INTO recovery_config (id, password_hash, salt, hash_parameters, updated_at) VALUES (1, ?, ?, ?, UTC_TIMESTAMP(3))', [saved.hash, saved.salt, JSON.stringify(saved.parameters)]);
+    await transaction.execute('INSERT IGNORE INTO recovery_config (id, password_hash, salt, hash_parameters, updated_at) VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP(3))', [saved.hash, saved.salt, JSON.stringify(saved.parameters)]);
     const current = await readRecoveryConfig(transaction, ' FOR UPDATE');
     if (initializeOnly && !current.password_hash.equals(saved.hash)) return { preserved: true };
-    if (!initializeOnly) await transaction.execute('UPDATE recovery_config SET password_hash = ?, salt = ?, hash_parameters = ?, updated_at = UTC_TIMESTAMP(3) WHERE id = 1', [saved.hash, saved.salt, JSON.stringify(saved.parameters)]);
+    if (!initializeOnly) await transaction.execute('UPDATE recovery_config SET password_hash = ?, salt = ?, hash_parameters = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = 1', [saved.hash, saved.salt, JSON.stringify(saved.parameters)]);
     await transaction.execute('DELETE FROM password_reset_tokens');
     return { preserved: false };
   });

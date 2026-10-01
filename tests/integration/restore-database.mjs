@@ -43,7 +43,7 @@ INSERT INTO restore_marker VALUES (42);
 INSERT INTO users (username, password) VALUES ('restore_teacher', '${randomBytes(16).toString('hex')}');
 ${readFileSync(join(migrationsPath, '002_password_recovery.sql'), 'utf8')}
 ${readFileSync(join(migrationsPath, '003_recovery_config.sql'), 'utf8')}
-INSERT INTO recovery_config (id, password_hash, salt, hash_parameters, updated_at) VALUES (1, UNHEX('${master.hash.toString('hex')}'), UNHEX('${master.salt.toString('hex')}'), '${JSON.stringify(master.parameters)}', UTC_TIMESTAMP(3));
+INSERT INTO recovery_config (id, password_hash, salt, hash_parameters, updated_at) VALUES (1, UNHEX('${master.hash.toString('hex')}'), UNHEX('${master.salt.toString('hex')}'), '${JSON.stringify(master.parameters)}', '2026-10-01 23:00:00.000');
 INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (UNHEX('${randomBytes(32).toString('hex')}'), 1, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 10 MINUTE));
 `, 'utf8');
   writeFileSync(wrongDatabaseBackupPath, `-- MySQL dump wrong-database fixture
@@ -63,9 +63,10 @@ CREATE TABLE \`users\` (id INT NOT NULL);
       verification.query('SELECT COUNT(*) AS count FROM sessions'),
       verification.query('SELECT COUNT(*) AS count FROM password_reset_tokens'),
     ]);
-    if (!result.restored || marker[0]?.value !== 42 || Number(migrations[0].count) !== 3 || Number(sessions[0].count) !== 0 || Number(resetTokens[0].count) !== 0) throw new Error('Isolated restore verification failed');
-    const [recovery] = await verification.query('SELECT password_hash, salt FROM recovery_config');
+    if (!result.restored || marker[0]?.value !== 42 || Number(migrations[0].count) !== 4 || Number(sessions[0].count) !== 0 || Number(resetTokens[0].count) !== 0) throw new Error('Isolated restore verification failed');
+    const [recovery] = await verification.query("SELECT password_hash, salt, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s.%f') AS updated_at FROM recovery_config");
     if (!recovery[0]?.password_hash.equals(master.hash) || !recovery[0]?.salt.equals(master.salt)) throw new Error('Recovery configuration was not preserved by restore');
+    if (recovery[0]?.updated_at !== '2026-10-02 07:00:00.000000') throw new Error(`Recovery timestamp was not migrated to Asia/Taipei: ${recovery[0]?.updated_at}`);
     console.log(`Restore integration passed in ${database}`);
   } finally { await verification.end(); }
 } finally {

@@ -23,3 +23,26 @@ try {
 }
 
 export default mysql;
+
+export const DATABASE_TIME_ZONE = '+08:00';
+
+export async function createDatabaseConnection(options) {
+  const connection = await mysql.createConnection({ ...options, timezone: DATABASE_TIME_ZONE });
+  try {
+    await connection.query(`SET time_zone = '${DATABASE_TIME_ZONE}'`);
+    return connection;
+  } catch (error) {
+    await connection.end().catch(() => {});
+    throw error;
+  }
+}
+
+export function createDatabasePool(options) {
+  const pool = mysql.createPool({ ...options, timezone: DATABASE_TIME_ZONE });
+  pool.on('connection', (connection) => {
+    connection.query(`SET time_zone = '${DATABASE_TIME_ZONE}'`, (error) => {
+      if (error) connection.destroy();
+    });
+  });
+  return pool;
+}

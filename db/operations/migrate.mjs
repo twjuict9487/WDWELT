@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from '../core/mysql-driver.mjs';
+import { createDatabaseConnection } from '../core/mysql-driver.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
 import { derivePasswordHash, normalizeUsername } from '../core/password.mjs';
 
@@ -92,7 +92,7 @@ async function ensureUsersCompatibility(connection, database) {
       await connection.execute('UPDATE users SET username = ?, normalized_username = ? WHERE id = ?', [row.username, row.normalizedUsername, row.id]);
     }
   }
-  await connection.query('UPDATE users SET created_at = UTC_TIMESTAMP(3) WHERE created_at IS NULL');
+  await connection.query('UPDATE users SET created_at = CURRENT_TIMESTAMP(3) WHERE created_at IS NULL');
   await connection.query('ALTER TABLE users MODIFY username VARCHAR(50) NOT NULL, MODIFY normalized_username VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, MODIFY password_salt VARBINARY(32) NOT NULL, MODIFY password_hash VARBINARY(64) NOT NULL, MODIFY password_parameters JSON NOT NULL, MODIFY created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)');
   const [indexes] = await connection.query("SHOW INDEX FROM users WHERE Key_name = 'uq_users_normalized_username'");
   if (!indexes.length) await connection.query('ALTER TABLE users ADD UNIQUE KEY uq_users_normalized_username (normalized_username)');
@@ -102,7 +102,7 @@ async function ensureUsersCompatibility(connection, database) {
 
 export async function runMigrations({ configPath, migrationsPath = defaultMigrationsPath, log = () => {} }) {
   const config = loadDatabaseConfig(configPath);
-  const connection = await mysql.createConnection(databaseConnectionOptions(config, { multipleStatements: true }));
+  const connection = await createDatabaseConnection(databaseConnectionOptions(config, { multipleStatements: true }));
   const lockName = `wdwelt_migrate_${config.database}`;
   let locked = false;
   try {
