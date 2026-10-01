@@ -1,5 +1,6 @@
-import mysql from 'mysql2/promise';
+import { createDatabasePool } from '../../db/core/mysql-driver.mjs';
 import { databaseConnectionOptions } from '../../db/core/config.mjs';
+import { toTaipeiIsoString } from '../../db/core/time.mjs';
 
 const CONNECTION_ERROR_CODES = new Set([
   'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
@@ -40,7 +41,7 @@ export class DatabaseManager {
     this.#config = config;
     this.#log = log;
     this.#retrySeconds = config.reconnectInitialSeconds;
-    this.#pool = mysql.createPool(databaseConnectionOptions(config, {
+    this.#pool = createDatabasePool(databaseConnectionOptions(config, {
       waitForConnections: true,
       connectionLimit: config.connectionLimit,
       queueLimit: 20,
@@ -56,8 +57,8 @@ export class DatabaseManager {
   start() {
     void this.checkReady();
     this.#cleanupTimer = setInterval(() => {
-      void this.execute('DELETE FROM sessions WHERE expires_at <= UTC_TIMESTAMP(3)').catch(() => {});
-      void this.execute('DELETE FROM password_reset_tokens WHERE expires_at <= UTC_TIMESTAMP(3)').catch(() => {});
+      void this.execute('DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP(3)').catch(() => {});
+      void this.execute('DELETE FROM password_reset_tokens WHERE expires_at <= CURRENT_TIMESTAMP(3)').catch(() => {});
     }, this.#config.sessionCleanupMinutes * 60_000);
     this.#cleanupTimer.unref();
   }
@@ -65,7 +66,7 @@ export class DatabaseManager {
   #markUnavailable(error) {
     const wasReady = this.#ready;
     this.#ready = false;
-    this.#lastCheck = new Date().toISOString();
+    this.#lastCheck = toTaipeiIsoString();
     if (wasReady || !this.#unavailableLogged) this.#log('error', 'db_unavailable', 'MySQL connection is unavailable.');
     this.#unavailableLogged = true;
     this.#scheduleRetry();
@@ -98,7 +99,7 @@ export class DatabaseManager {
       await withTimeout(this.#pool.query('SELECT 1'), this.#config.readyTimeoutMs);
       const wasReady = this.#ready;
       this.#ready = true;
-      this.#lastCheck = new Date().toISOString();
+      this.#lastCheck = toTaipeiIsoString();
       this.#retrySeconds = this.#config.reconnectInitialSeconds;
       this.#unavailableLogged = false;
       if (this.#retryTimer) { clearTimeout(this.#retryTimer); this.#retryTimer = null; }

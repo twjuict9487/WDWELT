@@ -22,6 +22,7 @@
 }
 
 .weekly-overview h2 { font-size: 1.15em; }
+.weekly-days { display: grid; gap: 0; }
 .weekly-day h3 { color: var(--text-muted); font-size: var(--font-small); margin: 20px 0 8px; }
 .weekly-day ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .weekly-entry { width: 100%; min-height: 56px; display: flex; align-items: center; gap: 12px; text-align: left; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
@@ -107,6 +108,10 @@ button {
   min-height: 100dvh;
   margin: 0 auto;
   padding: calc(18px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));
+}
+
+.desktop-sidebar {
+  display: none;
 }
 
 .page-header {
@@ -727,5 +732,167 @@ code {
 @media (min-width: 480px) {
   .button-row .button {
     width: auto;
+  }
+}
+
+@media (min-width: 768px) {
+  .app-shell {
+    max-width: 960px;
+    padding-right: 32px;
+    padding-left: 32px;
+  }
+
+  .auth-panel {
+    max-width: 520px;
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  .weekly-days {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 20px;
+  }
+
+  .weekly-day h3 {
+    margin-top: 10px;
+  }
+
+  .timetable {
+    min-width: 0;
+  }
+
+  .timetable th:first-child {
+    width: 82px;
+  }
+
+  .class-input {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .timetable-actions {
+    flex-direction: row;
+  }
+
+  .timetable-actions .button {
+    flex: 1 1 0;
+    width: auto;
+  }
+}
+
+@media (min-width: 960px) {
+  .app-layout.is-authenticated {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    width: min(100%, 1440px);
+    min-height: 100vh;
+    min-height: 100dvh;
+    margin: 0 auto;
+  }
+
+  .desktop-sidebar {
+    position: sticky;
+    top: 0;
+    display: flex;
+    height: 100vh;
+    height: 100dvh;
+    padding: 24px 14px;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .desktop-brand {
+    padding: 8px 14px 24px;
+    font-size: 20px;
+    font-weight: 800;
+  }
+
+  .desktop-nav {
+    display: grid;
+    gap: 6px;
+  }
+
+  .desktop-nav-item {
+    display: flex;
+    width: 100%;
+    min-height: 46px;
+    padding: 10px 14px;
+    align-items: center;
+    gap: 14px;
+    color: var(--text);
+    background: transparent;
+    border: 0;
+    border-radius: 9px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .desktop-nav-item span {
+    width: 22px;
+    font-size: 21px;
+    text-align: center;
+  }
+
+  .desktop-nav-item:hover,
+  .desktop-nav-item.active {
+    background: var(--surface-raised);
+  }
+
+  .desktop-nav-item:focus-visible {
+    outline: 3px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  .app-layout.is-authenticated .app-shell {
+    max-width: none;
+    margin: 0;
+    padding-right: 36px;
+    padding-left: 36px;
+  }
+
+  .app-layout.is-authenticated .header-action {
+    display: none;
+  }
+
+  .home-dashboard {
+    display: grid;
+    grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.6fr);
+    gap: 20px;
+    align-items: start;
+  }
+
+  .home-primary,
+  .weekly-overview {
+    min-width: 0;
+  }
+
+  .home-dashboard .weekly-days {
+    grid-template-columns: repeat(5, minmax(120px, 1fr));
+    gap: 12px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .home-dashboard .weekly-day h3 {
+    margin: 4px 0 8px;
+    text-align: center;
+  }
+
+  .home-dashboard .weekly-entry {
+    display: grid;
+    min-height: 68px;
+    padding: 10px;
+    gap: 4px;
+    align-content: center;
+  }
+
+  .home-dashboard .weekly-period {
+    display: none;
+  }
+
+  .home-dashboard .weekly-name {
+    font-weight: 800;
   }
 }

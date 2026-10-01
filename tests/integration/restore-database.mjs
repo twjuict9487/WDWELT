@@ -59,7 +59,7 @@ CREATE TABLE \`users\` (id INT NOT NULL);
       verification.query('SELECT COUNT(*) AS count FROM sessions'),
       verification.query('SELECT COUNT(*) AS count FROM password_reset_tokens'),
     ]);
-    if (!result.restored || marker[0]?.value !== 42 || Number(migrations[0].count) !== 2 || Number(sessions[0].count) !== 0 || Number(resetTokens[0].count) !== 0) throw new Error('Isolated restore verification failed');
+    if (!result.restored || marker[0]?.value !== 42 || Number(migrations[0].count) !== 3 || Number(sessions[0].count) !== 0 || Number(resetTokens[0].count) !== 0) throw new Error('Isolated restore verification failed');
     console.log(`Restore integration passed in ${database}`);
   } finally { await verification.end(); }
 } finally {

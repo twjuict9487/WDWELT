@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from '../core/mysql-driver.mjs';
+import { createDatabaseConnection } from '../core/mysql-driver.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
 
 const argument = (name) => {
@@ -10,7 +10,7 @@ const argument = (name) => {
 
 export async function runPreflight(configPath, { inspectAccounts = false } = {}) {
   const config = loadDatabaseConfig(configPath);
-  const connection = await mysql.createConnection(databaseConnectionOptions(config));
+  const connection = await createDatabaseConnection(databaseConnectionOptions(config));
   try {
     const output = {};
     for (const [name, sql] of [

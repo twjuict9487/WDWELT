@@ -32,7 +32,7 @@ export async function testRecoveryApi({ base, database, key, logs, api, check })
   check((await reset(normal.cookie)).response.status === 401, 'normal session cannot replace a reset capability');
   check((await reset(`wdwelt_reset=${randomBytes(32).toString('base64url')}`)).response.status === 401, 'forged capability rejected');
   check((await reset(verified.cookie, 'x')).response.status === 400, 'backend independently rejects an invalid new password');
-  await database.execute('UPDATE password_reset_tokens SET expires_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE token_hash = ?', [hashSessionToken(token)]);
+  await database.execute('UPDATE password_reset_tokens SET expires_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE token_hash = ?', [hashSessionToken(token)]);
   check((await reset(verified.cookie)).response.status === 401, 'expired capability rejected');
   const retry = await verify();
   const retryToken = tokenOf(retry.cookie);

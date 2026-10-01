@@ -1,5 +1,6 @@
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, relative, resolve } from 'node:path';
+import { toTaipeiIsoString } from '../../db/core/time.mjs';
 
 export const MIME_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'], ['.js', 'text/javascript; charset=utf-8'],
@@ -69,7 +70,7 @@ export function createRequestHandler({ root, startedAt = Date.now(), onHealth, c
         onHealth?.();
         json(response, 200, {
           status: 'ok', version: metadata.version, build: metadata.build, buildTime: metadata.buildTimestamp,
-          uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000), timestamp: new Date().toISOString(),
+          uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000), timestamp: toTaipeiIsoString(),
           memoryRssBytes: process.memoryUsage().rss,
         }, request.method === 'HEAD');
         return;
@@ -87,7 +88,7 @@ export function createRequestHandler({ root, startedAt = Date.now(), onHealth, c
           build: metadata.build,
           buildTime: metadata.buildTimestamp,
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
-          timestamp: new Date().toISOString(),
+          timestamp: toTaipeiIsoString(),
           memoryRssBytes: process.memoryUsage().rss,
           migration: databaseReady ? await currentMigration() : 'unavailable',
           databaseLastCheck: databaseStatus().lastCheck,

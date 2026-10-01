@@ -92,6 +92,8 @@ try {
 
   database = new DatabaseManager(loadDatabaseConfig(testConfigPath));
   assert(await database.checkReady(), 'temporary database pool became ready');
+  const databaseClock = await database.execute("SELECT @@session.time_zone AS sessionTimeZone, DATE_FORMAT(CURRENT_TIMESTAMP(3), '%Y-%m-%d %H:%i:%s.%f') AS taipeiNow");
+  assert(databaseClock[0].sessionTimeZone === '+08:00' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/.test(databaseClock[0].taipeiNow), 'database sessions store explicit Asia/Taipei wall-clock timestamps');
   const recoveryKey = randomBytes(32).toString('base64url');
   const logs = [];
   const handler = createApiHandler({ database, masterRecoveryKey: recoveryKey, log: (...entry) => logs.push(entry) });
@@ -123,7 +125,7 @@ try {
   const tokenA = cookieToken(cookieA);
   const storedSession = await database.execute('SELECT token_hash, expires_at FROM sessions WHERE token_hash = ?', [hashSessionToken(tokenA)]);
   assert(storedSession.length === 1 && !Buffer.from(storedSession[0].token_hash).includes(Buffer.from(tokenA)), 'database stored only the session token digest');
-  assert(storedSession[0].expires_at.toISOString() === loginA.value.expiresAt, 'read requests did not change database session expiry');
+  assert(storedSession[0].expires_at.getTime() === Date.parse(loginA.value.expiresAt), 'read requests did not change database session expiry');
   const credentialRows = await database.execute("SELECT COUNT(*) AS plaintextColumn FROM information_schema.columns WHERE table_schema = ? AND table_name = 'users' AND column_name = 'password'", [testDatabase]);
   assert(Number(credentialRows[0].plaintextColumn) === 0, 'plaintext password column no longer existed');
 
@@ -134,22 +136,30 @@ try {
   const courseA = timetable.value.state.courses[0].courseId;
   assert((await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieA, body: null })).response.status === 400, 'null progress body returned 400 without an internal error');
   const savedProgress = await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieA, body: { progress: 'P.61', note: '3-2 未完成', updatedAt: '2000-01-01T00:00:00.000Z' } });
-  assert(savedProgress.response.status === 200 && /Z$/.test(savedProgress.value.progress.updatedAt) && savedProgress.value.progress.updatedAt !== '2000-01-01T00:00:00.000Z', 'progress ignored client timestamp and returned backend UTC timestamp');
+  assert(savedProgress.response.status === 200 && /\+08:00$/.test(savedProgress.value.progress.updatedAt) && savedProgress.value.progress.updatedAt !== '2000-01-01T00:00:00.000Z', 'progress ignored client timestamp and returned backend Taipei timestamp');
+  const [storedProgressClock] = await database.execute("SELECT DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS storedTime, DATE_FORMAT(CURRENT_TIMESTAMP(3), '%Y-%m-%d %H:%i:%s') AS currentTime FROM course_progress WHERE course_id = ?", [courseA]);
+  assert(storedProgressClock.storedTime === storedProgressClock.currentTime, 'raw database progress time matches the current Taipei wall clock');
   const weeklyState = (await api(base, '/api/timetable', { cookie: cookieA })).value.state;
   assert(weeklyState.timetable.entries.length === 2 && weeklyState.timetable.entries.every((entry) => weeklyState.progressByCourse[entry.courseId].progress === 'P.61'), 'weekly occurrences receive the same latest progress from the existing account API');
-  await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [] } });
-  assert((await api(base, `/api/progress/${courseA}`, { cookie: cookieA })).value.progress.progress === 'P.61', 'removing timetable entries preserved course progress');
 
   const loginB = await api(base, '/api/auth/login', { method: 'POST', body: { username: 'TeacherB', password: '12345678' } });
   const cookieB = loginB.cookie;
+  const timetableB = await api(base, '/api/timetable', { method: 'PUT', cookie: cookieB, body: { entries: [{ weekday: 3, period: 3, className: '307' }] } });
+  const courseB = timetableB.value.state.courses[0].courseId;
+  const oneOccurrence = await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [{ weekday: 1, period: 1, className: '307' }] } });
+  assert(oneOccurrence.value.state.courses[0].courseId === courseA && oneOccurrence.value.state.progressByCourse[courseA].progress === 'P.61', 'course and progress remain while one timetable occurrence still uses the class');
   assert((await api(base, `/api/progress/${courseA}`, { cookie: cookieB })).response.status === 404, 'user B could not read user A course');
   assert((await api(base, `/api/progress/${courseA}`, { method: 'PUT', cookie: cookieB, body: { progress: 'overwrite', note: 'overwrite' } })).response.status === 404, 'user B cannot write user A progress or note');
-  assert((await api(base, '/api/courses', { cookie: cookieB })).value.courses.length === 0 && (await api(base, '/api/timetable?user_id=1', { cookie: cookieB })).value.state.courses.length === 0, 'authenticated identity isolates courses and timetable even with an arbitrary user_id query');
+  assert((await api(base, '/api/courses', { cookie: cookieB })).value.courses[0].courseId === courseB && (await api(base, '/api/timetable?user_id=1', { cookie: cookieB })).value.state.courses[0].courseId === courseB, 'authenticated identity isolates same-name courses even with an arbitrary user_id query');
   const meB = await api(base, '/api/auth/me', { cookie: cookieB });
   const userB = meB.value.user.id;
   let crossUserRejected = false;
   try { await database.execute('INSERT INTO timetable_entries (user_id, weekday, period, course_id) VALUES (?, 1, 1, ?)', [userB, courseA]); } catch (error) { crossUserRejected = error.code === 'ER_NO_REFERENCED_ROW_2'; }
   assert(crossUserRejected, 'database constraint rejected cross-user timetable reference');
+
+  const removedA = await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [] } });
+  assert(removedA.value.state.courses.length === 0 && (await api(base, `/api/progress/${courseA}`, { cookie: cookieA })).response.status === 404, 'last timetable occurrence deletes the unused user-owned course and cascades its progress');
+  assert((await api(base, '/api/courses', { cookie: cookieB })).value.courses[0].courseId === courseB, 'orphan cleanup leaves another user same-name course intact');
 
   await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [{ weekday: 1, period: 1, className: '307' }] } });
   await database.query(`CREATE TRIGGER reject_test_period BEFORE INSERT ON timetable_entries FOR EACH ROW
@@ -158,12 +168,14 @@ try {
   await database.query('DROP TRIGGER reject_test_period');
   const afterFailure = await api(base, '/api/timetable', { cookie: cookieA });
   assert(failedReplace.response.status === 500 && afterFailure.value.state.timetable.entries[0].period === 1, 'failed timetable replacement rolled back completely');
+  const deletedTimetable = await api(base, '/api/timetable', { method: 'DELETE', cookie: cookieA });
+  assert(deletedTimetable.value.state.timetable === null && deletedTimetable.value.state.courses.length === 0, 'deleting a timetable removes all newly orphaned courses for that user');
 
   const logout = await api(base, '/api/auth/logout', { method: 'POST', cookie: cookieA });
   assert(logout.response.status === 200 && (await api(base, '/api/auth/me', { cookie: cookieA })).response.status === 401, 'logout invalidated the original session');
   const secondLoginA = await api(base, '/api/auth/login', { method: 'POST', body: { username: 'TeacherA', password: '111' } });
   const secondTokenA = cookieToken(secondLoginA.cookie);
-  await database.execute('UPDATE sessions SET expires_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE token_hash = ?', [hashSessionToken(secondTokenA)]);
+  await database.execute('UPDATE sessions SET expires_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE token_hash = ?', [hashSessionToken(secondTokenA)]);
   assert((await api(base, '/api/auth/me', { cookie: secondLoginA.cookie })).response.status === 401, 'expired session was rejected');
 
   await testRecoveryApi({ base, database, key: recoveryKey, logs, api, check: assert });
@@ -171,7 +183,7 @@ try {
     database.execute('SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?', [testDatabase]),
     database.execute('SELECT COUNT(*) AS count FROM schema_migrations'),
   ]);
-  assert(Number(tableCount[0].count) === 7 && Number(migrationCount[0].count) === 2, 'migrations created application tables and the dedicated recovery table');
+  assert(Number(tableCount[0].count) === 7 && Number(migrationCount[0].count) === 3, 'migrations created application tables and normalized timestamps to Taipei');
   console.log(`DB integration passed: ${checks.length} checks in ${testDatabase}`);
   for (const check of checks) console.log(`  PASS ${check}`);
 } finally {

@@ -2,7 +2,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import mysql from '../core/mysql-driver.mjs';
+import { createDatabaseConnection } from '../core/mysql-driver.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
 import { runMigrations } from './migrate.mjs';
 import { createTemporaryOptionFile } from '../core/mysql-option-file.mjs';
@@ -39,7 +39,7 @@ export async function restoreDatabase({ configPath, backupPath, migrationsPath }
     });
   } finally { option.remove(); }
   const migrations = await runMigrations({ configPath, migrationsPath });
-  const connection = await mysql.createConnection(databaseConnectionOptions(config));
+  const connection = await createDatabaseConnection(databaseConnectionOptions(config));
   try {
     await connection.query('DELETE FROM sessions');
     await connection.query('DELETE FROM password_reset_tokens');
