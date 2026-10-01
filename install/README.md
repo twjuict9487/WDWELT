@@ -1232,7 +1232,7 @@ $config = 'C:\ProgramData\WDWELT\config\wdwelt.json'
 Get-NetTCPConnection -State Listen -LocalPort 8080 | Format-Table LocalAddress,LocalPort,OwningProcess
 ```
 
-WDWELT 不會停止不屬於自己的 process，也不會偷偷改用 8081。先識別 owner；不要隨便結束不認識的 PID。
+一般 deployment 設定不會停止不屬於自己的 process，也不會偷偷改用 8081。固定目標環境的 `reclaimPort8080` 則明確設為 `true`：安裝程式與每分鐘執行的 `WDWELT Watchdog` 會以 `taskkill /T /F` 終止占用 8080 的衝突 PID，接著重新啟動並驗證 WDWELT。處理紀錄會寫入 `logs\operations.jsonl` 的 `port_reclaim` 事件。
 
 ## PC 顯示正常，但 iPhone `ERR_CONNECTION_REFUSED`
 

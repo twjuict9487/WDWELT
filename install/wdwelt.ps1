@@ -68,7 +68,8 @@ function Read-DeploymentSettings {
   if($hostNumber-in@($network,$broadcast)-or$gatewayNumber-in@($network,$broadcast)){throw 'hostAddress/defaultGateway 不可使用 network 或 broadcast address。'}
   $allowed=@($settings.allowedClientRanges|ForEach-Object{([string]$_).Trim()}|Where-Object{$_})
   if(-not$allowed.Count){throw 'allowedClientRanges 不可為空。'}
-  return [pscustomobject]@{Path=[IO.Path]::GetFullPath($resolved);EnvironmentName=[string]$settings.environmentName;HostAddress=$hostAddress.IPAddressToString;SubnetCidr=[string]$settings.subnetCidr;PrefixLength=$prefix;DefaultGateway=$gateway.IPAddressToString;AllowedClientRanges=$allowed}
+  $reclaimPort8080 = $settings.PSObject.Properties['reclaimPort8080'] -and [bool]$settings.reclaimPort8080
+  return [pscustomobject]@{Path=[IO.Path]::GetFullPath($resolved);EnvironmentName=[string]$settings.environmentName;HostAddress=$hostAddress.IPAddressToString;SubnetCidr=[string]$settings.subnetCidr;PrefixLength=$prefix;DefaultGateway=$gateway.IPAddressToString;AllowedClientRanges=$allowed;ReclaimPort8080=$reclaimPort8080}
 }
 
 $deploymentSettings=Read-DeploymentSettings
@@ -129,6 +130,7 @@ function Read-WdweltConfig {
   if ([string]::IsNullOrWhiteSpace([string]$config.backupPath)) { $config | Add-Member -NotePropertyName backupPath -NotePropertyValue (Join-Path $config.installPath 'backups') -Force }
   else { $config.backupPath = Resolve-ConfiguredPath ([string]$config.backupPath) }
   if ([string]::IsNullOrWhiteSpace([string]$config.mysqlServiceName)) { $config | Add-Member -NotePropertyName mysqlServiceName -NotePropertyValue 'MySQL80' -Force }
+  if (-not $config.PSObject.Properties['reclaimPort8080']) { $config | Add-Member -NotePropertyName reclaimPort8080 -NotePropertyValue $false -Force }
   $remoteProperty = $config.PSObject.Properties['allowedRemoteAddresses']
   if (-not $remoteProperty -or -not @($remoteProperty.Value).Count) {
     $defaultRemote = if ([string]$config.canonicalHost -eq $ProductionCanonicalHost) { @($ProductionAllowedRemoteAddresses) } else { @('LocalSubnet') }
@@ -153,7 +155,7 @@ $Config = if ($Command -eq 'install' -and -not (Test-Path -LiteralPath $ConfigPa
     port=8080; bindAddress='0.0.0.0'; canonicalHost=''; canonicalUrl=''; installPath=$InstallPath
     currentPath=(Join-Path $InstallPath 'current'); logPath=(Join-Path $InstallPath 'logs')
     runPath=(Join-Path $InstallPath 'run'); backupPath=(Join-Path $InstallPath 'backups'); healthIntervalSeconds=60; healthTimeoutSeconds=5
-    healthFailureThreshold=3; recoveryCooldownSeconds=120; maintenanceLockMinutes=15; logRetentionDays=14; logMaxBytes=5000000
+    healthFailureThreshold=3; recoveryCooldownSeconds=120; maintenanceLockMinutes=15; logRetentionDays=14; logMaxBytes=5000000; reclaimPort8080=[bool]$deploymentSettings.ReclaimPort8080
   }
 } else { Read-WdweltConfig }
 Assert-SafeInstallLayout $Config
@@ -300,6 +302,28 @@ function Get-PortOwner {
   [pscustomobject]@{ PID=$ownerPid; Address=if($listenAddress){$listenAddress}else{'無法確認'}; Name=if($process){$process.Name}elseif($basic){$basic.ProcessName}else{'無法確認'}; CommandLine=if($process){$process.CommandLine}else{$null} }
 }
 
+function Stop-ConflictingPortOwner {
+  if (-not [bool]$Config.reclaimPort8080) { return $false }
+  for ($attempt=1; $attempt -le 3; $attempt++) {
+    $owner = Get-PortOwner
+    if (-not $owner) { return $true }
+    $verified = Get-VerifiedHost
+    if ($verified -and [int]$verified.Record.pid -eq [int]$owner.PID) { return $false }
+    if ([int]$owner.PID -le 4) { throw "Port 8080 由受保護的系統 PID $($owner.PID) 占用，無法回收。" }
+    Write-OperationLog warning port_reclaim "Terminating conflicting port 8080 owner PID $($owner.PID) $($owner.Name)."
+    & taskkill.exe /PID ([string][int]$owner.PID) /T /F | Out-Null
+    if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $owner.PID -ErrorAction SilentlyContinue)) { throw "無法終止占用 Port 8080 的 PID $($owner.PID)。" }
+    for ($wait=1; $wait -le 20; $wait++) {
+      Start-Sleep -Milliseconds 250
+      $remaining = Get-PortOwner
+      if (-not $remaining -or [int]$remaining.PID -ne [int]$owner.PID) { break }
+    }
+  }
+  $remaining = Get-PortOwner
+  if ($remaining) { throw "Port 8080 持續由 PID $($remaining.PID) $($remaining.Name) 占用，三次回收後仍未釋放。" }
+  return $true
+}
+
 function Get-PidRecord {
   if (-not (Test-Path -LiteralPath $PidFile)) { return $null }
   try { return Get-Content -Raw -Encoding UTF8 -LiteralPath $PidFile | ConvertFrom-Json } catch { return $null }
@@ -440,6 +464,7 @@ function Start-Wdwelt {
     throw '找到已驗證的 WDWELT process，但 liveness 失敗；請執行 recover。'
   }
   $owner = Get-PortOwner
+  if ($owner -and [bool]$Config.reclaimPort8080) { Stop-ConflictingPortOwner | Out-Null; $owner = Get-PortOwner }
   if ($owner) { throw "Port 8080 已被 PID $($owner.PID) $($owner.Name) 占用；未停止該程序。" }
   $node = if ($Config.nodePath) { [string]$Config.nodePath } else { (Get-Command node -ErrorAction Stop).Source }
   $server = Join-Path $Config.installPath 'tools\host\server.mjs'
@@ -503,14 +528,18 @@ function Recover-Wdwelt {
   Acquire-MaintenanceLock 'recovery'
   try {
     $live = Invoke-LiveHealth
-    if ($live) {
+    $healthyHost = if ($live) { Get-VerifiedHost } else { $null }
+    if ($live -and $healthyHost) {
       if (-not (Invoke-ReadyHealth) -and (Test-DatabaseConfigured)) { Start-ConfiguredMySql | Out-Null; Write-Host 'Node 正常；資料庫尚未 ready，因此沒有重啟 Node。' }
       else { Write-Host 'WDWELT 已健康，不需要 recovery。' }
       return
     }
     $verified = Get-VerifiedHost
     if ($verified) { Stop-Wdwelt -Maintenance }
-    elseif (Get-PortOwner) { throw 'Port 8080 由未知程序占用；recovery 未停止它。' }
+    elseif (Get-PortOwner) {
+      if ([bool]$Config.reclaimPort8080) { Stop-ConflictingPortOwner | Out-Null }
+      else { throw 'Port 8080 由未知程序占用；recovery 未停止它。' }
+    }
     Read-Release | Out-Null
     Start-Wdwelt
     if (-not (Invoke-LiveHealth)) { throw 'Recovery start 後 liveness 仍失敗。' }
@@ -527,12 +556,18 @@ function Invoke-Watchdog([switch]$DailyReset) {
     if (Test-Path -LiteralPath $ManualStopFile) { return }
     if (Get-MaintenanceLock) { return }
     $live = Invoke-LiveHealth
-    if ($live) {
+    $healthyHost = if ($live) { Get-VerifiedHost } else { $null }
+    if ($live -and $healthyHost) {
       Remove-Item -LiteralPath $FailureFile -Force -ErrorAction SilentlyContinue
       if (-not (Invoke-ReadyHealth) -and (Test-DatabaseConfigured)) {
         Start-ConfiguredMySql | Out-Null
         Write-OperationLog warning db_not_ready 'Node is live; watchdog did not restart it while database was unavailable.'
       }
+      return
+    }
+    if ([bool]$Config.reclaimPort8080 -and (Get-PortOwner)) {
+      Recover-Wdwelt
+      Remove-Item -LiteralPath $FailureFile -Force -ErrorAction SilentlyContinue
       return
     }
     if ($DailyReset) { Recover-Wdwelt; return }
@@ -551,7 +586,8 @@ function Invoke-Boot {
   Remove-Item $ManualStopFile -Force -ErrorAction SilentlyContinue
   Set-Desired 'running'
   for($attempt=1;$attempt -le 6;$attempt++){
-    if(Invoke-LiveHealth){if(-not(Invoke-ReadyHealth)-and(Test-DatabaseConfigured)){Start-ConfiguredMySql|Out-Null};return}
+    $live=Invoke-LiveHealth
+    if($live -and (Get-VerifiedHost)){if(-not(Invoke-ReadyHealth)-and(Test-DatabaseConfigured)){Start-ConfiguredMySql|Out-Null};return}
     try { Recover-Wdwelt; if(Invoke-LiveHealth){return} } catch { Write-OperationLog warning boot "Boot attempt $attempt failed: $($_.Exception.Message)" }
     Start-Sleep -Seconds ([Math]::Min(10*$attempt,30))
   }
@@ -761,7 +797,7 @@ function Validate-Package([string]$Path) {
   if($reparsePoints.Count){throw 'Package 不可包含 symlink／junction／reparse point。'}
   $release=Read-Release $productionRoot
   if($manifest.version -ne $release.version -or $manifest.build -ne $release.build){throw 'Package manifest 與 build metadata 不一致。'}
-  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'recovery.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $databaseRoot 'migrations\002_password_recovery.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
+  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'recovery.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $databaseRoot 'migrations\002_password_recovery.sql'),(Join-Path $databaseRoot 'migrations\003_taipei_timestamps.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Package 缺少必要檔案：$required" }
   }
   $manifestFiles=@($manifest.files)
@@ -879,7 +915,7 @@ function Invoke-Install {
   $databasePrepared=$false
   if($existingInstall){
     $savedConfig=Get-Content -Raw -Encoding UTF8 -LiteralPath $installedConfig|ConvertFrom-Json
-    foreach($property in @{backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;bindAddress=$chosen;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080"}.GetEnumerator()){
+    foreach($property in @{backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;reclaimPort8080=[bool]$deploymentSettings.ReclaimPort8080;bindAddress=$chosen;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080"}.GetEnumerator()){
       $savedConfig|Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value -Force
       $Config|Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value -Force
     }
@@ -908,7 +944,7 @@ function Invoke-Install {
     Copy-Item -LiteralPath (Join-Path $package.Root 'host') -Destination $hostCurrent -Recurse
     Copy-Item -Path (Join-Path $package.Root 'db\*') -Destination (Join-Path $InstallPath 'db') -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $package.Root 'tools\database') -Destination (Join-Path $InstallPath 'tools\database') -Recurse -Force
-    $installed=[ordered]@{port=8080;bindAddress=$chosen;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080";networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;installPath=$InstallPath;currentPath=$current;logPath=(Join-Path $InstallPath 'logs');runPath=(Join-Path $InstallPath 'run');backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;healthIntervalSeconds=60;healthTimeoutSeconds=5;healthFailureThreshold=3;recoveryCooldownSeconds=120;maintenanceLockMinutes=15;logRetentionDays=14;logMaxBytes=5000000}
+    $installed=[ordered]@{port=8080;bindAddress=$chosen;canonicalHost=$chosen;canonicalUrl="http://${chosen}:8080";networkPolicy='deployment-settings-v1';deploymentEnvironmentName=$DeploymentEnvironmentName;networkSubnet=$ProductionSubnet;networkPrefixLength=$ProductionPrefixLength;networkGateway=$ProductionGateway;allowedRemoteAddresses=$chosenRemote;reclaimPort8080=[bool]$deploymentSettings.ReclaimPort8080;installPath=$InstallPath;currentPath=$current;logPath=(Join-Path $InstallPath 'logs');runPath=(Join-Path $InstallPath 'run');backupPath=(Join-Path $InstallPath 'backups');databaseConfigPath=$installedRuntimeCredential;adminDatabaseConfigPath=$installedAdminCredential;mysqlServiceName=$MySqlServiceName;nodePath=$nodeExecutable;healthIntervalSeconds=60;healthTimeoutSeconds=5;healthFailureThreshold=3;recoveryCooldownSeconds=120;maintenanceLockMinutes=15;logRetentionDays=14;logMaxBytes=5000000}
     $installed|ConvertTo-Json|Set-Content -Encoding UTF8 -LiteralPath $installedConfig
   }
   Copy-FileAtomically (Join-Path $package.Root 'tools\wdwelt.ps1') (Join-Path $InstallPath 'tools\wdwelt.ps1')
