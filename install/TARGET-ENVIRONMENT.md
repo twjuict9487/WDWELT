@@ -8,10 +8,22 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\INSTALL-TARGET-ENVIRON
 
 這條 PowerShell 路徑不呼叫 `cmd.exe` 或 `npm.cmd`，而是由 `node.exe` 直接執行 npm CLI。腳本會安裝 npm dependencies、連接現有的本機 MySQL、確認 `g2`、建立或修復 `wdwelt_app@localhost`，然後呼叫同一套 G2 bootstrap 完成建置、封裝、備份、migration、tasks、firewall 與健康檢查。最後在 DB 設定固定主復原密碼；重跑也會恢復該值，並使尚未使用的密碼重設驗證失效。
 
-安裝會建立以 `SYSTEM` 及最高權限執行的 `WDWELT Boot` 與 `WDWELT Watchdog` 工作排程。Windows 正常由 UEFI 開機並進入作業系統後，Boot task 會自動啟動服務；Watchdog 每分鐘檢查一次。此固定環境已啟用 `reclaimPort8080`，若其他程序占用 TCP 8080，watchdog 會記錄 PID 與程序名稱、執行 `taskkill /T /F`、等待埠釋放，再啟動並驗證 WDWELT。
+同一條命令同時用於首次安裝與更新。若 `package-lock.json` 未改變且 `node_modules` 完整，會略過 `npm ci`；即使需要安裝 dependencies，也只執行一次。若懷疑 dependencies 損壞，可加上 `-ForceDependencies` 強制重裝。需要完整開發驗證時才加上 `-FullValidation`。
+
+安裝會建立以 `SYSTEM` 及最高權限執行的 `WDWELT Boot` 與 `WDWELT Watchdog` 工作排程。Windows 正常由 UEFI 開機並進入作業系統後，Boot task 會自動啟動服務；Watchdog 每分鐘檢查一次。此固定環境已啟用 `reclaimPort8080`，若其他程序占用 TCP 8080，watchdog 會記錄 PID 與程序名稱，依序嘗試 PowerShell `Stop-Process`、CIM `Terminate` 與 `taskkill /T /F`，等待埠釋放，再啟動並驗證 WDWELT。
 
 此環境的 MySQL root、`wdwelt_app` 與主復原密碼都設定為 `11335248`。資料庫憑證寫入本機忽略追蹤的 `config/local/`，主復原密碼在 `g2.recovery_config` 以 salted scrypt 保存。若用 `npm.cmd run recovery:set` 臨時更換主復原密碼，下次執行目標環境安裝會重新設為固定值；查詢狀態使用 `npm.cmd run recovery:status`。
 
 目標機需已有 Node.js／npm、MySQL Server 8.x，且 MySQL 只綁定 localhost。Windows 網卡需已配置上述固定 IP 與 gateway；腳本不更改 NIC。若安裝時 TCP 8080 已由其他程序占用，目標環境會先回收該埠。它會要求管理員權限。先檢視不修改系統的安裝計畫，可在上述指令最後加上 `-PlanOnly`。
+
+快速診斷使用：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\INSTALL-TARGET-ENVIRONMENT.ps1 -Diagnose
+```
+
+診斷會直接列出 Node、MySQL service、TCP 8080 的 PID／程序／命令列、已安裝版本與網路狀態。每次正式執行會寫入 `runtime\logs\target-setup-日期時間.log`；失敗時另產生固定路徑 `runtime\logs\LAST-ERROR.txt`，其中包含失敗階段、原因、建議處理方式、完整 log 路徑及最後 30 行輸出。
+
+`-ExecutionPolicy Bypass` 可避開一般 PowerShell execution policy，但不能凌駕 AppLocker、WDAC 或組織的裝置管理政策。若 Windows 禁止 `powershell.exe` 或 `node.exe` 執行，必須由裝置管理員調整政策；專案內沒有能安全或可靠覆寫該政策的命令。
 
 一般版 `main` 保留原有安裝方式；此固定密碼與自動佈建只存在於 `enviroment-setup` 分支。

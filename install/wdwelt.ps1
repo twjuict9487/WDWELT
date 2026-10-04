@@ -311,8 +311,22 @@ function Stop-ConflictingPortOwner {
     if ($verified -and [int]$verified.Record.pid -eq [int]$owner.PID) { return $false }
     if ([int]$owner.PID -le 4) { throw "Port 8080 由受保護的系統 PID $($owner.PID) 占用，無法回收。" }
     Write-OperationLog warning port_reclaim "Terminating conflicting port 8080 owner PID $($owner.PID) $($owner.Name)."
-    & taskkill.exe /PID ([string][int]$owner.PID) /T /F | Out-Null
-    if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $owner.PID -ErrorAction SilentlyContinue)) { throw "無法終止占用 Port 8080 的 PID $($owner.PID)。" }
+    try { Stop-Process -Id ([int]$owner.PID) -Force -ErrorAction Stop }
+    catch { Write-OperationLog warning port_reclaim_method "Stop-Process failed for PID $($owner.PID): $($_.Exception.Message)" }
+    Start-Sleep -Milliseconds 300
+    if (Get-Process -Id $owner.PID -ErrorAction SilentlyContinue) {
+      try {
+        $cimProcess=Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.PID)" -ErrorAction Stop
+        if($cimProcess){$null=Invoke-CimMethod -InputObject $cimProcess -MethodName Terminate -ErrorAction Stop}
+      } catch { Write-OperationLog warning port_reclaim_method "CIM Terminate failed for PID $($owner.PID): $($_.Exception.Message)" }
+    }
+    Start-Sleep -Milliseconds 300
+    if ((Get-Process -Id $owner.PID -ErrorAction SilentlyContinue) -and (Get-Command taskkill.exe -ErrorAction SilentlyContinue)) {
+      & taskkill.exe /PID ([string][int]$owner.PID) /T /F | Out-Null
+    }
+    if (Get-Process -Id $owner.PID -ErrorAction SilentlyContinue) {
+      throw "無法終止占用 Port 8080 的 PID $($owner.PID) $($owner.Name)；已嘗試 Stop-Process、CIM Terminate 與 taskkill。請確認工作排程以 SYSTEM/最高權限執行，並檢查 AppLocker/WDAC 或受保護服務。"
+    }
     for ($wait=1; $wait -le 20; $wait++) {
       Start-Sleep -Milliseconds 250
       $remaining = Get-PortOwner

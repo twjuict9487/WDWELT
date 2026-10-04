@@ -39,6 +39,16 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(source('src/weekly.ts')).not.toMatch(/localStorage|fetch\(|saveProgress/);
   });
 
+  it('keeps one progress editor and exposes clear active timeline states', () => {
+    const app = source('src/app.ts');
+    const css = source('src/styles.css');
+    expect(app.match(/function renderProgress\(\)/g)).toHaveLength(1);
+    expect(app).toContain("role === 'last' ? '修正進度' : '預先更新進度'");
+    expect(app).toContain('role-${role} ${expanded ? \'is-expanded\' : \'is-shrunk\'}');
+    expect(css).toMatch(/\.timeline-card\.role-current:not\(\.is-expanded\)\s*\{[^}]*border:\s*2px solid var\(--primary\);/s);
+    expect(css).toMatch(/\.timeline-card\.is-expanded\s*\{[^}]*border:\s*3px solid var\(--text\);/s);
+  });
+
   it('keeps recovery host-only and separate from normal session authentication', () => {
     const api = source('server/app/api.mjs');
     const recovery = source('server/app/recovery.mjs');

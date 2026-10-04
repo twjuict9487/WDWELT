@@ -7,6 +7,7 @@ param(
   [switch]$NonInteractive,
   [switch]$AllowPublicProfile,
   [switch]$Offline,
+  [switch]$DependenciesReady,
   [string]$MySqlServiceName,
   [string]$CanonicalHost,
   [string]$DeploymentSettingsPath,
@@ -65,7 +66,7 @@ function Restart-ElevatedIfNeeded {
   if (Test-Administrator) { return $false }
   Write-Host '需要 Administrator 權限；即將顯示 Windows UAC。' -ForegroundColor Yellow
   $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-  foreach ($switchName in @('ExistingAccounts','SkipTests','FullValidation','NonInteractive','AllowPublicProfile','Offline')) {
+  foreach ($switchName in @('ExistingAccounts','SkipTests','FullValidation','NonInteractive','AllowPublicProfile','Offline','DependenciesReady')) {
     if ((Get-Variable -Name $switchName -ValueOnly)) { $arguments += "-$switchName" }
   }
   foreach ($pair in @(
@@ -650,16 +651,25 @@ function Main {
     Ensure-G2Database $mysqlState.MySql $admin.Config
   }
 
-  Write-Phase '安裝 WDWELT JavaScript dependencies'
-  $npmArguments = @('ci','--include=dev','--no-audit','--fund=false')
-  if ($Offline) {
-    $offlineCache = Resolve-BootstrapInputPath $NpmCachePath
-    if (-not $offlineCache -or -not (Test-Path -LiteralPath $offlineCache -PathType Container)) {
-      throw 'Offline 模式需要預先填好的 npm cache directory；請以 -NpmCachePath 指定。'
+  Write-Phase '準備 WDWELT JavaScript dependencies'
+  if ($DependenciesReady) {
+    foreach ($requiredDependency in @('node_modules\vite\package.json','node_modules\mysql2\package.json')) {
+      if (-not (Test-Path -LiteralPath (Join-Path $RepositoryRoot $requiredDependency) -PathType Leaf)) {
+        throw "DependenciesReady 指定的 dependencies 不完整，缺少：$requiredDependency"
+      }
     }
-    $npmArguments += @('--offline','--cache',$offlineCache)
+    Write-Detail '入口已依 package-lock 驗證 dependencies；略過重複 npm ci。'
+  } else {
+    $npmArguments = @('ci','--include=dev','--no-audit','--fund=false')
+    if ($Offline) {
+      $offlineCache = Resolve-BootstrapInputPath $NpmCachePath
+      if (-not $offlineCache -or -not (Test-Path -LiteralPath $offlineCache -PathType Container)) {
+        throw 'Offline 模式需要預先填好的 npm cache directory；請以 -NpmCachePath 指定。'
+      }
+      $npmArguments += @('--offline','--cache',$offlineCache)
+    }
+    Invoke-Npm $node $npmCli $npmArguments "npm ci$(if($Offline){' --offline'}else{''})"
   }
-  Invoke-Npm $node $npmCli $npmArguments "npm ci$(if($Offline){' --offline'}else{''})"
 
   Write-Phase '驗證 administrative database connection'
   Invoke-Node $node @('db\operations\preflight.mjs','--config',$admin.Path) 'database preflight'

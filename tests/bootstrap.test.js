@@ -79,8 +79,47 @@ describe('one-file Windows bootstrap', () => {
     const target = readFileSync(resolve(repositoryRoot, 'install', 'target-environment.ps1'), 'utf8');
     expect(bootstrap).toContain("'node_modules\\npm\\bin\\npm-cli.js'");
     expect(bootstrap).toContain('Invoke-Npm $node $npmCli');
-    expect(target).toContain('& $node $npmCli ci');
+    expect(target).toContain("Invoke-TargetProcess '安裝鎖定的 JavaScript dependencies' $node");
     expect(target).not.toMatch(/npm\.cmd|cmd\.exe/i);
+  });
+
+  it('uses one resumable target entry point with actionable diagnostics', () => {
+    const bootstrap = readFileSync(bootstrapPath, 'utf8');
+    const rootTarget = readFileSync(resolve(repositoryRoot, 'INSTALL-TARGET-ENVIRONMENT.ps1'), 'utf8');
+    const target = readFileSync(resolve(repositoryRoot, 'install', 'target-environment.ps1'), 'utf8');
+    const targetDatabase = readFileSync(resolve(repositoryRoot, 'db', 'operations', 'target-environment.mjs'), 'utf8');
+    expect(rootTarget).toContain('[switch]$Diagnose');
+    expect(target).toContain("'LAST-ERROR.txt'");
+    expect(target).toContain('失敗階段：$script:stage');
+    expect(target).toContain('Show-Diagnostics');
+    expect(target).toContain("node_modules\\.wdwelt-package-lock.sha256");
+    expect(target).toContain("'-DependenciesReady'");
+    expect(target.match(/'ci','--include=dev'/g)).toHaveLength(1);
+    expect(bootstrap).toContain('[switch]$DependenciesReady');
+    expect(bootstrap).toContain('略過重複 npm ci');
+    expect(targetDatabase).toContain('Target MySQL preparation failed${code}: ${detail}');
+    expect(targetDatabase).toContain('Next: confirm the MySQL80 service');
+  });
+
+  windowsIt('writes a compact actionable failure summary', () => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'wdwelt-target-error-'));
+    try {
+      execFileSync('powershell.exe', [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve(repositoryRoot, 'tests/integration/target-error-summary.ps1'),
+        '-TargetPath', resolve(repositoryRoot, 'install/target-environment.ps1'), '-FixtureRoot', directory,
+      ], { encoding: 'utf8', timeout: 15_000 });
+      const summary = readFileSync(resolve(directory, 'LAST-ERROR.txt'), 'utf8');
+      expect(summary).toContain('失敗階段：安裝鎖定的 JavaScript dependencies');
+      expect(summary).toContain('下一步：');
+      expect(summary).toContain('npm ERR! registry unavailable');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  windowsIt('prefers native PowerShell when reclaiming TCP 8080', () => {
+    execFileSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', resolve(repositoryRoot, 'tests/integration/port-reclaim-functions.ps1'),
+      '-ManagerPath', managerPath,
+    ], { encoding: 'utf8', timeout: 15_000 });
   });
 
   it('keeps credentials out of process arguments and redacts secret-like log arguments', () => {
@@ -126,6 +165,8 @@ describe('one-file Windows bootstrap', () => {
     expect(main.indexOf('$lanIp = Assert-ProductionNetwork')).toBeLessThan(main.indexOf('$node = Ensure-Node'));
     expect(manager).toContain('-LocalAddress ([string]$Config.canonicalHost) -RemoteAddress $remoteAddresses');
     expect(manager).toContain('-EdgeTraversalPolicy Block');
+    expect(manager).toContain('Stop-Process -Id ([int]$owner.PID) -Force');
+    expect(manager).toContain('Invoke-CimMethod -InputObject $cimProcess -MethodName Terminate');
     expect(manager).toContain('& taskkill.exe /PID ([string][int]$owner.PID) /T /F');
     expect(manager).toContain("tools\\deployment.json");
     expect(manager).toContain('Firewall remote CIDR 必須完整位於 RFC1918 private range');

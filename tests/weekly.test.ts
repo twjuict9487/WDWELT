@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getTimelineScheduleState } from '../src/schedule';
-import { weeklyCourses, weeklyEntryTimelineRole } from '../src/weekly';
+import { weeklyCourses, weeklyEntryNeedsUpdate, weeklyEntryTimelineRole } from '../src/weekly';
 import type { AppState } from '../src/types';
 
 const fixture = (): AppState => ({ version: 2, courses: [{ courseId: '7', className: '307' }, { courseId: '8', className: '二年甲班' }],
@@ -37,5 +37,22 @@ describe('weekly course view of the existing account state', () => {
     expect(weeklyEntryTimelineRole(entries.find((entry) => entry.weekday === 1 && entry.period === 1)!, timeline, mondayNow)).toBe('current');
     expect(weeklyEntryTimelineRole(entries.find((entry) => entry.weekday === 1 && entry.period === 4)!, timeline, mondayNow)).toBe('next');
     expect(weeklyEntryTimelineRole(entries.find((entry) => entry.weekday === 5)!, timeline, mondayNow)).toBeNull();
+  });
+  it('shows no outline after the final class of the day', () => {
+    const state = fixture();
+    const fridayAfterSchool = new Date('2026-08-14T09:30:00.000Z');
+    const timeline = getTimelineScheduleState(state.timetable!, fridayAfterSchool);
+    const fridayLast = weeklyCourses(state)[4].entries[0];
+    expect(timeline.current).toBeNull();
+    expect(weeklyEntryTimelineRole(fridayLast, timeline, fridayAfterSchool)).toBeNull();
+  });
+
+  it('flags only completed occurrences not updated since their own start', () => {
+    const mondayFirst = { weekday: 1, period: 1, courseId: '7' };
+    const afterClass = new Date('2026-08-10T01:05:00.000Z');
+    expect(weeklyEntryNeedsUpdate(mondayFirst, undefined, afterClass)).toBe(true);
+    expect(weeklyEntryNeedsUpdate(mondayFirst, '2026-08-10T00:20:00.000Z', afterClass)).toBe(false);
+    expect(weeklyEntryNeedsUpdate(mondayFirst, '2026-08-07T00:20:00.000Z', afterClass)).toBe(true);
+    expect(weeklyEntryNeedsUpdate({ ...mondayFirst, period: 2 }, undefined, afterClass)).toBe(false);
   });
 });

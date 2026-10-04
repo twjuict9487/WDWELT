@@ -26,5 +26,11 @@ export async function prepareTargetEnvironment({port=3306, directory=configDirec
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  prepareTargetEnvironment().catch(() => {console.error('Target MySQL preparation failed. Check the MySQL80 service and root credentials.');process.exitCode=1;});
+  prepareTargetEnvironment().catch((error) => {
+    const code = typeof error?.code === 'string' ? ` [${error.code}]` : '';
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`Target MySQL preparation failed${code}: ${detail}`);
+    console.error('Next: confirm the MySQL80 service is running on localhost and the fixed root password is correct.');
+    process.exitCode=1;
+  });
 }

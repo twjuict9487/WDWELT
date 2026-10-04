@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PERIODS,
   createDebugInstant,
+  formatNextClassCountdown,
   getHomeScheduleState,
   getTimelineScheduleState,
   selectDefaultTimelineRole,
@@ -247,5 +248,20 @@ describe('Taipei instant', () => {
   it('以明確 UTC+8 算術建立 instant，不使用含糊字串解析', () => {
     expect(taipeiDateToInstant({ year: 2026, month: 8, day: 10 }, '08:10').toISOString())
       .toBe('2026-08-10T00:10:00.000Z');
+  });
+});
+
+describe('下一堂倒數', () => {
+  it('只對今天六小時內的下一堂顯示自動進位分鐘', () => {
+    const now = atTaipei('2026-08-10', '09:01');
+    const next = getTimelineScheduleState(timetable([entry(1, 2)]), now).next!;
+    expect(formatNextClassCountdown(next, now)).toBe('9 分鐘後');
+  });
+
+  it('跨日與已開始的課程不顯示倒數', () => {
+    const friday = atTaipei('2026-08-14', '17:30');
+    const monday = getTimelineScheduleState(timetable([entry(1, 1)]), friday).next!;
+    expect(formatNextClassCountdown(monday, friday)).toBeNull();
+    expect(formatNextClassCountdown(monday, monday.startAt)).toBeNull();
   });
 });
