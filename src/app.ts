@@ -51,7 +51,7 @@ import {
 } from './timeline';
 import { nextTimetableInputIndex } from './timetable-navigation';
 import type { AppState, Course, CourseProgress, DraftEntry } from './types';
-import { weeklyCourses } from './weekly';
+import { weeklyCourses, weeklyEntryTimelineRole } from './weekly';
 
 type Screen = 'loading' | 'login' | 'register' | 'recovery' | 'reset-password' | 'home' | 'timetable' | 'progress' | 'settings';
 type TimetableIntent = 'create' | 'edit';
@@ -594,17 +594,21 @@ function renderDebugControls(): string {
   `;
 }
 
-function renderWeeklyCourses(): string {
+function renderWeeklyCourses(timeline: TimelineScheduleState, now: Date): string {
   return `<section class="panel weekly-overview" aria-labelledby="weekly-heading">
     <h2 id="weekly-heading">本週課程</h2>
     <div class="weekly-days">${weeklyCourses(state).map((day) => `<section class="weekly-day" aria-label="${weekdayNames[day.weekday]}">
       <h3>${weekdayNames[day.weekday]}</h3>
-      ${day.entries.length ? `<ul>${day.entries.map((entry) => `<li>
-        <button type="button" class="weekly-entry" data-course-id="${escapeHtml(entry.courseId)}" data-time-label="${weekdayNames[day.weekday]}・第 ${entry.period} 節" aria-label="${escapeHtml(entry.className ?? '課程已不存在')}，${weekdayNames[day.weekday]}第 ${entry.period} 節，進度 ${escapeHtml(entry.progress)}" ${entry.className === null ? 'disabled' : ''}>
+      ${day.entries.length ? `<ul>${day.entries.map((entry) => {
+        const role = weeklyEntryTimelineRole(entry, timeline, now);
+        const stateClass = role === 'current' ? ' is-current' : role ? ' is-adjacent' : '';
+        const stateLabel = role ? `${timelineLabels[role]}，` : '';
+        return `<li>
+        <button type="button" class="weekly-entry${stateClass}" data-course-id="${escapeHtml(entry.courseId)}" data-time-label="${weekdayNames[day.weekday]}・第 ${entry.period} 節" aria-label="${stateLabel}${escapeHtml(entry.className ?? '課程已不存在')}，${weekdayNames[day.weekday]}第 ${entry.period} 節，進度 ${escapeHtml(entry.progress)}" ${role === 'current' ? 'aria-current="time"' : ''} ${entry.className === null ? 'disabled' : ''}>
           <span class="weekly-period">第 ${entry.period} 節</span>
           <span class="weekly-details"><span class="weekly-name">${escapeHtml(entry.className ?? '課程已不存在')}</span><span class="weekly-progress">${escapeHtml(entry.progress)}</span></span>
         </button>
-      </li>`).join('')}</ul>` : '<p class="weekly-empty">本日無課程</p>'}
+      </li>`; }).join('')}</ul>` : '<p class="weekly-empty">本日無課程</p>'}
     </section>`).join('')}</div>
   </section>`;
 }
@@ -632,7 +636,7 @@ function renderHome(): void {
     ${renderToast()}
     <div class="home-dashboard">
       <div class="home-primary">${renderTimeline(timeline, now)}</div>
-      ${renderWeeklyCourses()}
+      ${renderWeeklyCourses(timeline, now)}
     </div>
     ${renderDebugControls()}
   `, true);

@@ -32,7 +32,7 @@ describe('G2 source-of-truth and secret boundaries', () => {
   it('keeps the weekly overview below the unchanged timeline and routes entries to the existing editor', () => {
     const app = source('src/app.ts');
     const home = app.slice(app.indexOf('function renderHome'), app.indexOf('function autoCenterTimelineCard'));
-    expect(home.indexOf('${renderTimeline(timeline, now)}')).toBeLessThan(home.indexOf('${renderWeeklyCourses()}'));
+    expect(home.indexOf('${renderTimeline(timeline, now)}')).toBeLessThan(home.indexOf('${renderWeeklyCourses(timeline, now)}'));
     expect(app).toContain("document.querySelectorAll<HTMLButtonElement>('.weekly-entry')");
     expect(app).toContain("openProgress(courseId, entry.dataset.timeLabel ?? '')");
     expect(app.match(/function renderProgress\(\)/g)).toHaveLength(1);
@@ -83,7 +83,9 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(css).toMatch(/@media\s*\(min-width:\s*960px\)[\s\S]*\.home-dashboard\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:/);
     expect(css).toMatch(/@media\s*\(min-width:\s*960px\)[\s\S]*\.home-dashboard \.weekly-days\s*\{[^}]*grid-template-columns:\s*repeat\(5,/);
     expect(css).toMatch(/@media\s*\(min-width:\s*960px\)[\s\S]*\.home-dashboard \.weekly-period\s*\{[^}]*display:\s*none;/);
-    expect(app).toContain('aria-label="${escapeHtml(entry.className');
+    expect(css).toMatch(/\.home-dashboard \.weekly-entry\.is-current\s*\{[^}]*border:\s*3px solid #fff;/);
+    expect(css).toMatch(/\.home-dashboard \.weekly-entry\.is-adjacent\s*\{[^}]*border-color:\s*#fff;/);
+    expect(app).toContain('aria-label="${stateLabel}${escapeHtml(entry.className');
   });
 
   it('removes only uniquely owned courses after their last timetable reference is gone', () => {
