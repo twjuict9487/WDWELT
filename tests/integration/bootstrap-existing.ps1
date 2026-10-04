@@ -22,7 +22,7 @@ function Show-Plan {}
 function Restart-ElevatedIfNeeded { return $false }
 function Assert-ProductionNetwork { return '10.20.30.18' }
 function Ensure-Node { return 'node.exe' }
-function Get-NpmPath { return 'npm.cmd' }
+function Get-NpmCliPath { return 'npm-cli.js' }
 function Ensure-MySqlService { return [pscustomobject]@{Service=[pscustomobject]@{Name='TestMySQL'};MySql='C:\MySQL\mysql.exe';MySqlDump='C:\MySQL\mysqldump.exe'} }
 function Read-AdminConfig { throw 'Must not request root credentials' }
 function Ensure-G2Database { throw 'Must not create an existing database' }

@@ -74,6 +74,15 @@ describe('one-file Windows bootstrap', () => {
     expect(launcher).toContain('"%~dp0bootstrap.ps1"');
   });
 
+  it('can run npm through node without requiring cmd.exe', () => {
+    const bootstrap = readFileSync(bootstrapPath, 'utf8');
+    const target = readFileSync(resolve(repositoryRoot, 'install', 'target-environment.ps1'), 'utf8');
+    expect(bootstrap).toContain("'node_modules\\npm\\bin\\npm-cli.js'");
+    expect(bootstrap).toContain('Invoke-Npm $node $npmCli');
+    expect(target).toContain('& $node $npmCli ci');
+    expect(target).not.toMatch(/npm\.cmd|cmd\.exe/i);
+  });
+
   it('keeps credentials out of process arguments and redacts secret-like log arguments', () => {
     const bootstrap = readFileSync(bootstrapPath, 'utf8');
 

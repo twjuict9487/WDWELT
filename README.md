@@ -4,7 +4,7 @@ G2 Pilot 新增首頁「本週課程」與登入頁「忘記密碼」。主復�
 
 **已有 Node.js、MySQL 與 G2 帳號的 Windows 10 主機：** 設定 `config/deployment.json` 後執行 `npm.cmd run setup`。不需先跑 `npm install`；詳見 [既有環境快速安裝](install/EXISTING-ENVIRONMENT.md)。
 
-**`environment-setup` 固定校內環境分支：** 在目標機執行根目錄的 `INSTALL-TARGET-ENVIRONMENT.cmd`，使用預設的 `192.168.0.18:8080` 與指定帳號，詳見 [固定環境一鍵安裝](install/TARGET-ENVIRONMENT.md)。
+**`enviroment-setup` 固定校內環境分支：** 在目標機以 PowerShell 執行根目錄的 `INSTALL-TARGET-ENVIRONMENT.ps1`，不依賴 CMD，並使用預設的 `192.168.0.18:8080` 與指定帳號；詳見 [固定環境一鍵安裝](install/TARGET-ENVIRONMENT.md)。
 
 ## WDWELT G2 試行版 0.3.0
 

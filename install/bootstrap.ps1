@@ -527,16 +527,23 @@ function Ensure-G2Database([string]$MySqlPath, $AdminConfig) {
   } finally { Remove-Item -LiteralPath $optionFile -Force -ErrorAction SilentlyContinue }
 }
 
-function Get-NpmPath([string]$NodePath) {
-  $candidate = Join-Path (Split-Path -Parent $NodePath) 'npm.cmd'
-  if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
-  $command = Get-Command npm.cmd -ErrorAction SilentlyContinue
-  if ($command) { return $command.Source }
-  throw '找不到 npm.cmd；請重新安裝 Node.js LTS。'
+function Get-NpmCliPath([string]$NodePath) {
+  $nodeDirectory = Split-Path -Parent $NodePath
+  $candidates = @((Join-Path $nodeDirectory 'node_modules\npm\bin\npm-cli.js'))
+  if ($env:APPDATA) { $candidates += Join-Path $env:APPDATA 'npm\node_modules\npm\bin\npm-cli.js' }
+  foreach ($candidate in $candidates) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [IO.Path]::GetFullPath($candidate) }
+  }
+  throw '找不到 npm-cli.js；請重新安裝包含 npm 的 Node.js LTS。'
 }
 
 function Invoke-Node([string]$NodePath, [string[]]$Arguments, [string]$Description) {
   Invoke-Native $NodePath $Arguments $Description
+}
+
+function Invoke-Npm([string]$NodePath, [string]$NpmCliPath, [string[]]$Arguments, [string]$Description) {
+  $allArguments = @($NpmCliPath) + @($Arguments)
+  Invoke-Native $NodePath $allArguments $Description
 }
 
 function Get-LanCandidates {
@@ -620,7 +627,7 @@ function Main {
 
   Write-Phase '檢查或安裝 Node.js LTS'
   $node = Ensure-Node
-  $npm = Get-NpmPath $node
+  $npmCli = Get-NpmCliPath $node
 
   Write-Phase '檢查或安裝 MySQL Server 8.0'
   $mysqlState = Ensure-MySqlService
@@ -652,7 +659,7 @@ function Main {
     }
     $npmArguments += @('--offline','--cache',$offlineCache)
   }
-  Invoke-Native $npm $npmArguments "npm ci$(if($Offline){' --offline'}else{''})"
+  Invoke-Npm $node $npmCli $npmArguments "npm ci$(if($Offline){' --offline'}else{''})"
 
   Write-Phase '驗證 administrative database connection'
   Invoke-Node $node @('db\operations\preflight.mjs','--config',$admin.Path) 'database preflight'
@@ -666,14 +673,14 @@ function Main {
 
   Write-Phase '選擇性執行 development validation'
   if ($FullValidation -and -not $SkipTests) {
-    Invoke-Native $npm @('test','--','--run') 'unit tests'
-    Invoke-Native $npm @('run','typecheck') 'TypeScript typecheck'
-    Invoke-Native $npm @('run','test:db','--','--config',$admin.Path) 'isolated database integration'
-    Invoke-Native $npm @('run','test:restore','--','--config',$admin.Path) 'isolated restore integration'
+    Invoke-Npm $node $npmCli @('test','--','--run') 'unit tests'
+    Invoke-Npm $node $npmCli @('run','typecheck') 'TypeScript typecheck'
+    Invoke-Npm $node $npmCli @('run','test:db','--','--config',$admin.Path) 'isolated database integration'
+    Invoke-Npm $node $npmCli @('run','test:restore','--','--config',$admin.Path) 'isolated restore integration'
   } else { Write-Detail '快速 production install：跳過 development tests；需要完整驗證時使用 -FullValidation。' }
 
   Write-Phase '建立 production build'
-  Invoke-Native $npm @('run','build') 'production build'
+  Invoke-Npm $node $npmCli @('run','build') 'production build'
 
   Write-Phase '建立並驗證 production package'
   $manager = Join-Path $InstallDirectory 'wdwelt.ps1'

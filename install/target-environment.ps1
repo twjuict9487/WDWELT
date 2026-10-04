@@ -11,9 +11,10 @@ if($PlanOnly){
   exit 0
 }
 try {
-  $npm=(Get-Command npm.cmd -ErrorAction Stop).Source
   $node=(Get-Command node.exe -ErrorAction Stop).Source
-  & $npm ci --include=dev --no-audit --fund=false
+  $npmCli=Join-Path (Split-Path -Parent $node) 'node_modules\npm\bin\npm-cli.js'
+  if(-not(Test-Path -LiteralPath $npmCli -PathType Leaf)){throw '找不到 npm-cli.js；請重新安裝包含 npm 的 Node.js LTS。'}
+  & $node $npmCli ci --include=dev --no-audit --fund=false
   if($LASTEXITCODE-ne0){throw 'npm dependency installation failed.'}
   & $node (Join-Path $repository 'db\operations\target-environment.mjs')
   if($LASTEXITCODE-ne0){throw 'Fixed MySQL configuration failed.'}
