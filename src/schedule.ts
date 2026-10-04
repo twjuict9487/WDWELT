@@ -119,6 +119,18 @@ export function getPeriodDefinition(period: number): PeriodDefinition | undefine
   return PERIODS.find((definition) => definition.period === period);
 }
 
+export function formatNextClassCountdown(item: ScheduledClass, now: Date): string | null {
+  const current = getTaipeiParts(now);
+  const sameDay = item.date.year === current.year
+    && item.date.month === current.month
+    && item.date.day === current.day;
+  if (!sameDay) return null;
+  const remainingMs = item.startAt.getTime() - now.getTime();
+  if (remainingMs <= 0) return null;
+  const minutes = Math.ceil(remainingMs / 60_000);
+  return minutes <= 360 ? `${minutes} 分鐘後` : null;
+}
+
 function scheduledClassForDate(
   entry: TimetableEntry,
   date: { year: number; month: number; day: number; weekday: number },

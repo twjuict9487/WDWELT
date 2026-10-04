@@ -23,6 +23,9 @@ import {
   type ProgressDraft,
 } from './drafts';
 import { formatBuildTime, loadBuildMetadata, loadHostHealth, type BuildMetadata } from './build-metadata';
+import { connectionTransition, type ConnectionState } from './connectivity';
+import { timetableDeletionImpact } from './deletion-impact';
+import { formatDiagnostics } from './diagnostics';
 import { readRememberedUsername, rememberUsername, sessionRemainingMs, SESSION_WARNING_MS } from './session';
 import {
   loadPreferences,
@@ -31,9 +34,11 @@ import {
   type Preferences,
   type Theme,
 } from './preferences';
+import { debugModeEnabled, effectiveDebugDate } from './debug';
 import {
   PERIODS,
   createDebugInstant,
+  formatNextClassCountdown,
   getTimelineScheduleState,
   getTaipeiParts,
   type ScheduledClass,
@@ -95,7 +100,6 @@ function requireRoot(): HTMLDivElement {
 const root = requireRoot();
 const weekdayNames = ['', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'];
 const shortWeekdayNames = ['', '一', '二', '三', '四', '五', '六', '日'];
-const debugEnabled = new URLSearchParams(globalThis.location.search).get('debug') === '1';
 
 let state: AppState = structuredClone(EMPTY_STATE);
 let storageError: string | null = null;
@@ -104,6 +108,9 @@ let resourceError: string | null = null;
 let buildMetadata: BuildMetadata | null = null;
 let buildMetadataError = false;
 let hostStatus: 'Connected' | 'Host unavailable' = 'Host unavailable';
+let connectionState: ConnectionState = 'unknown';
+let connectionRestored = false;
+let connectionRestoredTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
 let preferences: Preferences;
 try { preferences = loadPreferences(); }
 catch {
@@ -161,18 +168,19 @@ function gridKey(weekday: number, period: number): string {
 }
 
 function effectiveNow(): Date {
-  return debugNow ? new Date(debugNow) : new Date();
+  return effectiveDebugDate(globalThis.location.search, debugNow);
 }
 
 function courseById(courseId: string): Course | undefined {
   return state.courses.find((course) => course.courseId === courseId);
 }
 
-function formatClock(date: Date): string {
+function formatClock(date: Date, includeSeconds = false): string {
   return new Intl.DateTimeFormat('zh-TW', {
     timeZone: 'Asia/Taipei',
     hour: '2-digit',
     minute: '2-digit',
+    ...(includeSeconds ? { second: '2-digit' as const } : {}),
     hourCycle: 'h23',
   }).format(date);
 }
@@ -251,11 +259,25 @@ function page(title: string, content: string, showSettings = false): string {
           ${showSettings ? '<button id="open-settings" class="header-action" type="button">設定</button>' : ''}
         </header>
         ${renderSystemErrors()}
+        <div id="connection-status-slot" aria-live="polite">${renderConnectionStatus()}</div>
         ${authenticatedUser ? '<p id="session-expiry-warning" class="status session-warning" role="status" hidden>登入狀態將於 5 分鐘內到期，請先儲存尚未完成的變更。</p>' : ''}
         ${content}
       </main>
     </div>
   `;
+}
+
+function renderConnectionStatus(): string {
+  if (connectionState === 'offline') {
+    return '<p class="connection-status offline" role="status">離線：目前無法連線到主機，已載入的資料仍可查看。</p>';
+  }
+  if (connectionRestored) return '<p class="connection-status restored" role="status">連線已恢復</p>';
+  return '';
+}
+
+function updateConnectionStatusUi(): void {
+  const slot = document.querySelector<HTMLElement>('#connection-status-slot');
+  if (slot) slot.innerHTML = renderConnectionStatus();
 }
 
 function renderSystemErrors(): string {
@@ -484,8 +506,7 @@ function formatOccurrenceDate(item: ScheduledClass): string {
 }
 
 function timelineCta(role: TimelineRole, item: ScheduledClass): string {
-  if (role === 'next') return '';
-  const label = role === 'current' ? '更新進度' : '修正進度';
+  const label = role === 'current' ? '更新進度' : role === 'last' ? '修正進度' : '預先更新進度';
   const kind = role === 'current' ? 'primary' : 'secondary';
   return `<button
     class="button ${kind} timeline-cta"
@@ -495,13 +516,20 @@ function timelineCta(role: TimelineRole, item: ScheduledClass): string {
   >${label}</button>`;
 }
 
+function renderNextCountdown(item: ScheduledClass, now: Date): string {
+  const value = formatNextClassCountdown(item, now);
+  return value
+    ? `<span class="timeline-countdown" data-next-start="${item.startAt.toISOString()}">${value}</span>`
+    : '';
+}
+
 function renderTimelineCard(role: TimelineRole, item: ScheduledClass, now: Date): string {
   const expanded = expandedTimelineRole === role;
   const className = courseById(item.entry.courseId)?.className ?? '未知班級';
   const progress = state.progressByCourse[item.entry.courseId];
   const progressValue = progress?.progress || '尚未紀錄';
   return `
-    <article class="timeline-card ${expanded ? 'is-expanded' : 'is-shrunk'}" data-timeline-role="${role}">
+    <article class="timeline-card role-${role} ${expanded ? 'is-expanded' : 'is-shrunk'}" data-timeline-role="${role}">
       <button
         class="timeline-card-toggle"
         type="button"
@@ -513,6 +541,7 @@ function renderTimelineCard(role: TimelineRole, item: ScheduledClass, now: Date)
           <span class="timeline-context">${timelineLabels[role]}</span>
           <strong class="timeline-shrink-class">${escapeHtml(className)}</strong>
           <span class="timeline-shrink-time">${formatOccurrenceWeekday(item)} ${item.start}–${item.end}</span>
+          ${role === 'next' ? renderNextCountdown(item, now) : ''}
           <span class="timeline-shrink-progress">${escapeHtml(progressValue)}</span>
         </span>
         <span class="timeline-expanded-head" aria-hidden="${!expanded}">
@@ -520,6 +549,7 @@ function renderTimelineCard(role: TimelineRole, item: ScheduledClass, now: Date)
           <strong class="timeline-class-name">${escapeHtml(className)}</strong>
           <span class="timeline-date">${formatOccurrenceDate(item)}</span>
           <span class="timeline-time">${item.start}–${item.end}</span>
+          ${role === 'next' ? renderNextCountdown(item, now) : ''}
         </span>
       </button>
       <div class="timeline-details" aria-hidden="${!expanded}" ${expanded ? '' : 'inert'}>
@@ -573,7 +603,7 @@ function renderTimeline(timeline: TimelineScheduleState, now: Date): string {
 }
 
 function renderDebugControls(): string {
-  if (!debugEnabled) return '';
+  if (!debugModeEnabled(globalThis.location.search)) return '';
   const parts = getTaipeiParts(effectiveNow());
   const date = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
   const time = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
@@ -597,16 +627,16 @@ function renderDebugControls(): string {
 function renderWeeklyCourses(timeline: TimelineScheduleState, now: Date): string {
   return `<section class="panel weekly-overview" aria-labelledby="weekly-heading">
     <h2 id="weekly-heading">本週課程</h2>
-    <div class="weekly-days">${weeklyCourses(state).map((day) => `<section class="weekly-day" aria-label="${weekdayNames[day.weekday]}">
+    <div class="weekly-days">${weeklyCourses(state, now).map((day) => `<section class="weekly-day" aria-label="${weekdayNames[day.weekday]}">
       <h3>${weekdayNames[day.weekday]}</h3>
       ${day.entries.length ? `<ul>${day.entries.map((entry) => {
         const role = weeklyEntryTimelineRole(entry, timeline, now);
         const stateClass = role === 'current' ? ' is-current' : role ? ' is-adjacent' : '';
         const stateLabel = role ? `${timelineLabels[role]}，` : '';
         return `<li>
-        <button type="button" class="weekly-entry${stateClass}" data-course-id="${escapeHtml(entry.courseId)}" data-time-label="${weekdayNames[day.weekday]}・第 ${entry.period} 節" aria-label="${stateLabel}${escapeHtml(entry.className ?? '課程已不存在')}，${weekdayNames[day.weekday]}第 ${entry.period} 節，進度 ${escapeHtml(entry.progress)}" ${role === 'current' ? 'aria-current="time"' : ''} ${entry.className === null ? 'disabled' : ''}>
+        <button type="button" class="weekly-entry${stateClass}" data-course-id="${escapeHtml(entry.courseId)}" data-time-label="${weekdayNames[day.weekday]}・第 ${entry.period} 節" aria-label="${stateLabel}${escapeHtml(entry.className ?? '課程已不存在')}，${weekdayNames[day.weekday]}第 ${entry.period} 節，進度 ${escapeHtml(entry.progress)}${entry.needsUpdate ? '，尚未更新' : ''}" ${role === 'current' ? 'aria-current="time"' : ''} ${entry.className === null ? 'disabled' : ''}>
           <span class="weekly-period">第 ${entry.period} 節</span>
-          <span class="weekly-details"><span class="weekly-name">${escapeHtml(entry.className ?? '課程已不存在')}</span><span class="weekly-progress">${escapeHtml(entry.progress)}</span></span>
+          <span class="weekly-details"><span class="weekly-name">${escapeHtml(entry.className ?? '課程已不存在')}</span><span class="weekly-progress">${escapeHtml(entry.progress)}</span>${entry.needsUpdate ? '<span class="weekly-stale">尚未更新</span>' : ''}</span>
         </button>
       </li>`; }).join('')}</ul>` : '<p class="weekly-empty">本日無課程</p>'}
     </section>`).join('')}</div>
@@ -835,7 +865,7 @@ function invalidateUndo(): void {
   undoRecord = null;
 }
 
-function armUndo(courseId: string, previous: CourseProgress | undefined): void {
+function armUndo(courseId: string, previous: CourseProgress | undefined, savedAt: string): void {
   invalidateUndo();
   const expiresAt = Date.now() + 10_000;
   const timeoutId = globalThis.setTimeout(() => {
@@ -852,7 +882,9 @@ function armUndo(courseId: string, previous: CourseProgress | undefined): void {
     expiresAt,
     timeoutId,
   };
-  toast = { kind: 'success', message: '已儲存', showUndo: true };
+  const savedDate = new Date(savedAt);
+  const savedClock = Number.isNaN(savedDate.getTime()) ? '時間未知' : formatClock(savedDate, true);
+  toast = { kind: 'success', message: `已儲存 ${savedClock}`, showUndo: true };
 }
 
 async function performUndo(): Promise<void> {
@@ -1071,7 +1103,7 @@ function renderProgress(): void {
       state = { ...state, progressByCourse: { ...state.progressByCourse, [course.courseId]: saved } };
       progressOriginalSnapshot = currentDraft;
       clearEditSnapshots();
-      armUndo(course.courseId, previousProgress);
+      armUndo(course.courseId, previousProgress, saved.updatedAt);
       requestBack();
     } catch (error) {
       showFormError(`${authErrorMessage(error)}；進度未變更。`);
@@ -1122,6 +1154,8 @@ function renderSettings(): void {
       <p>Build ID: ${buildMetadata ? escapeHtml(buildMetadata.build) : '無法確認'}</p>
       <p>目前 URL：${escapeHtml(globalThis.location.href)}</p>
       <p>Host 狀態：<span id="host-status">${hostStatus}</span></p>
+      ${button('copy-diagnostics', '複製系統資訊', 'secondary')}
+      <p id="diagnostics-copy-status" role="status" hidden></p>
     </section>
     ${button('settings-back', '返回首頁', 'quiet')}
   `);
@@ -1147,7 +1181,9 @@ function renderSettings(): void {
     navigate({ screen: 'timetable', intent: state.timetable ? 'edit' : 'create' });
   });
   document.querySelector('#delete-timetable')?.addEventListener('click', async () => {
-    if (!globalThis.confirm('確定刪除課表？不再被課表使用的班級及其進度也會一併刪除。')) return;
+    const impact = timetableDeletionImpact(state);
+    const message = `確定刪除課表？\n\n將刪除：\n・課表項目 ${impact.timetableEntries} 筆\n・不再使用的班級 ${impact.unusedCourses} 個\n・隨班級刪除的進度 ${impact.progressRecords} 筆`;
+    if (!globalThis.confirm(message)) return;
     try { state = await removeTimetable(); }
     catch (error) { dataError = `${authErrorMessage(error)}；課表未刪除。`; render(); return; }
     timelineContextSignature = '';
@@ -1165,10 +1201,20 @@ function renderSettings(): void {
     render();
   });
   document.querySelector('#logout')?.addEventListener('click', () => { void performLogout(); });
+  document.querySelector('#copy-diagnostics')?.addEventListener('click', async () => {
+    const status = document.querySelector<HTMLParagraphElement>('#diagnostics-copy-status');
+    try {
+      await navigator.clipboard.writeText(formatDiagnostics(buildMetadata, globalThis.location.href, hostStatus));
+      if (status) { status.textContent = '系統資訊已複製'; status.hidden = false; }
+    } catch {
+      if (status) { status.textContent = '無法存取剪貼簿，系統資訊未複製。'; status.hidden = false; }
+    }
+  });
   document.querySelector('#settings-back')?.addEventListener('click', requestBack);
 }
 
 function render(): void {
+  if (!debugModeEnabled(globalThis.location.search)) debugNow = null;
   switch (screen) {
     case 'loading': renderLoading(); break;
     case 'login': renderLogin(); break;
@@ -1206,9 +1252,20 @@ async function restoreSession(): Promise<void> {
 }
 
 function refreshHomeIfScheduleChanged(): void {
-  if (screen !== 'home' || !state.timetable || debugNow) return;
-  const nextSignature = getTimelineScheduleState(state.timetable, new Date()).signature;
+  if (screen !== 'home' || !state.timetable || (debugModeEnabled(globalThis.location.search) && debugNow)) return;
+  const now = new Date();
+  const nextSignature = getTimelineScheduleState(state.timetable, now).signature;
   if (nextSignature !== timelineContextSignature) render();
+  else updateNextCountdown(now);
+}
+
+function updateNextCountdown(now: Date): void {
+  document.querySelectorAll<HTMLElement>('[data-next-start]').forEach((element) => {
+    const startAt = new Date(element.dataset.nextStart ?? '').getTime();
+    const minutes = Math.ceil((startAt - now.getTime()) / 60_000);
+    if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 360) element.remove();
+    else element.textContent = `${minutes} 分鐘後`;
+  });
 }
 
 let healthCheckPending = false;
@@ -1217,8 +1274,22 @@ async function refreshHostStatus(): Promise<void> {
   healthCheckPending = true;
   try {
     hostStatus = await loadHostHealth();
+    const transition = connectionTransition(connectionState, hostStatus === 'Connected');
+    connectionState = transition.state;
+    if (transition.restored) {
+      connectionRestored = true;
+      if (connectionRestoredTimer !== null) globalThis.clearTimeout(connectionRestoredTimer);
+      connectionRestoredTimer = globalThis.setTimeout(() => {
+        connectionRestored = false;
+        connectionRestoredTimer = null;
+        updateConnectionStatusUi();
+      }, 5_000);
+    } else if (connectionState === 'offline') {
+      connectionRestored = false;
+    }
     const element = document.querySelector<HTMLElement>('#host-status');
     if (element) element.textContent = hostStatus;
+    updateConnectionStatusUi();
   } finally { healthCheckPending = false; }
 }
 

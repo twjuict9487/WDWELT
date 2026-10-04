@@ -34,6 +34,7 @@
 .weekly-details { min-width: 0; display: grid; gap: 4px; }
 .weekly-name, .weekly-progress { overflow-wrap: anywhere; }
 .weekly-progress, .weekly-empty { color: var(--text-muted); font-size: var(--font-small); }
+.weekly-stale { color: var(--warning-border); font-size: var(--font-small); font-weight: 700; }
 
 :root[data-theme='light'] {
   --bg: #f5f5f5;
@@ -295,7 +296,16 @@ textarea:focus-visible,
 
 .timeline-card.is-expanded {
   padding: 18px;
-  border-color: var(--primary);
+  border: 3px solid var(--text);
+}
+
+.timeline-card.role-current:not(.is-expanded) {
+  border: 2px solid var(--primary);
+}
+
+.timeline-card.role-current .timeline-context,
+.timeline-card.is-expanded .timeline-context {
+  color: var(--text);
 }
 
 .timeline-card-toggle {
@@ -368,6 +378,14 @@ textarea:focus-visible,
   color: var(--text-muted);
   font-size: var(--font-small);
   font-weight: 600;
+}
+
+.timeline-countdown {
+  width: fit-content;
+  margin-top: 4px;
+  color: var(--primary-text);
+  font-size: var(--font-small);
+  font-weight: 800;
 }
 
 .timeline-shrink-progress {
@@ -466,6 +484,29 @@ textarea:focus-visible,
   border: 1px solid var(--warning-border);
   border-radius: 4px;
   line-height: 1.45;
+}
+
+.connection-status {
+  position: sticky;
+  top: 8px;
+  z-index: 20;
+  padding: 8px 10px;
+  margin: 0 0 12px;
+  border-radius: 4px;
+  font-size: var(--font-small);
+  font-weight: 700;
+}
+
+.connection-status.offline {
+  color: var(--text);
+  background: var(--error-bg);
+  border: 1px solid var(--danger);
+}
+
+.connection-status.restored {
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--primary);
 }
 
 .session-warning {
@@ -649,6 +690,11 @@ textarea {
 
 .settings-build-info p {
   margin: 0.2rem 0;
+}
+
+.settings-build-info .button {
+  width: auto;
+  margin-top: 10px;
 }
 
 .danger-zone h2 {
