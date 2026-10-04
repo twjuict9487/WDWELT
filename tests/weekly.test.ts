@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { weeklyCourses } from '../src/weekly';
+import { getTimelineScheduleState } from '../src/schedule';
+import { weeklyCourses, weeklyEntryTimelineRole } from '../src/weekly';
 import type { AppState } from '../src/types';
 
 const fixture = (): AppState => ({ version: 2, courses: [{ courseId: '7', className: '307' }, { courseId: '8', className: '二年甲班' }],
@@ -27,5 +28,14 @@ describe('weekly course view of the existing account state', () => {
     expect(weeklyCourses(state)[0].entries[0].className).toBeNull();
     state.timetable = null;
     expect(weeklyCourses(state).every((day) => day.entries.length === 0)).toBe(true);
+  });
+  it('marks current, last, and next occurrences only when they belong to the displayed week', () => {
+    const state = fixture();
+    const mondayNow = new Date('2026-08-10T00:30:00.000Z');
+    const timeline = getTimelineScheduleState(state.timetable!, mondayNow);
+    const entries = weeklyCourses(state).flatMap((day) => day.entries);
+    expect(weeklyEntryTimelineRole(entries.find((entry) => entry.weekday === 1 && entry.period === 1)!, timeline, mondayNow)).toBe('current');
+    expect(weeklyEntryTimelineRole(entries.find((entry) => entry.weekday === 1 && entry.period === 4)!, timeline, mondayNow)).toBe('next');
+    expect(weeklyEntryTimelineRole(entries.find((entry) => entry.weekday === 5)!, timeline, mondayNow)).toBeNull();
   });
 });
