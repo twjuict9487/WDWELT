@@ -422,8 +422,14 @@ function Invoke-DatabaseTool([string]$ScriptName, [string[]]$Arguments, [string]
   $node = if ($Config.nodePath) { [string]$Config.nodePath } else { (Get-Command node -ErrorAction Stop).Source }
   $script = Join-Path $Root "db\operations\$ScriptName"
   if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { throw "找不到 database tool：$script" }
-  & $node $script @Arguments
-  if ($LASTEXITCODE -ne 0) { throw "Database tool failed：$ScriptName" }
+  $toolOutput = @(& $node $script @Arguments 2>&1)
+  $toolExitCode = $LASTEXITCODE
+  foreach ($line in $toolOutput) { Write-Host ([string]$line) }
+  if ($toolExitCode -ne 0) {
+    $details = (($toolOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+    if ([string]::IsNullOrWhiteSpace($details)) { $details = 'database tool did not return diagnostic output' }
+    throw "Database tool failed：$ScriptName (exit $toolExitCode)$([Environment]::NewLine)$details"
+  }
 }
 
 function Invoke-DatabaseBackup([string]$Label = 'manual', [string]$ToolRoot = $Config.installPath) {
@@ -434,7 +440,7 @@ function Invoke-DatabaseBackup([string]$Label = 'manual', [string]$ToolRoot = $C
     Invoke-DatabaseTool 'backup.mjs' @('--config',[string]$Config.adminDatabaseConfigPath,'--output',[string]$Config.backupPath,'--label',$Label) $ToolRoot
     Write-OperationLog info backup_success "Backup label $Label completed."
   } catch {
-    Write-OperationLog error backup_failure 'Database backup failed.'
+    Write-OperationLog error backup_failure "Database backup failed: $($_.Exception.Message)"
     throw
   }
 }
@@ -446,7 +452,7 @@ function Invoke-DatabaseMigration([string]$ToolRoot = $Config.installPath) {
     Invoke-DatabaseTool 'migrate.mjs' @('--config',[string]$Config.adminDatabaseConfigPath,'--migrations',(Join-Path $ToolRoot 'db\migrations')) $ToolRoot
     Write-OperationLog info migration_success 'Database migration completed.'
   } catch {
-    Write-OperationLog error migration_failure 'Database migration failed.'
+    Write-OperationLog error migration_failure "Database migration failed: $($_.Exception.Message)"
     throw
   }
 }
@@ -968,11 +974,12 @@ function Invoke-Install {
   Copy-FileAtomically (Join-Path $package.Root 'tools\wdwelt.ps1') (Join-Path $InstallPath 'tools\wdwelt.ps1')
   Copy-FileAtomically (Join-Path $package.Root 'tools\recovery.ps1') (Join-Path $InstallPath 'tools\recovery.ps1')
   Copy-FileAtomically (Join-Path $package.Root 'tools\deployment.json') (Join-Path $InstallPath 'tools\deployment.json')
+  $Config | Add-Member -NotePropertyName nodePath -NotePropertyValue $nodeExecutable -Force
+  $Config | Add-Member -NotePropertyName backupPath -NotePropertyValue (Join-Path $InstallPath 'backups') -Force
+  $Config | Add-Member -NotePropertyName adminDatabaseConfigPath -NotePropertyValue $installedAdminCredential -Force
   if(-not $databasePrepared){
-    & $nodeExecutable (Join-Path $InstallPath 'db\operations\backup.mjs') --config $installedAdminCredential --output (Join-Path $InstallPath 'backups') --label pre-migration
-    if($LASTEXITCODE-ne0){throw 'Pre-migration database backup failed; migration was not started.'}
-    & $nodeExecutable (Join-Path $InstallPath 'db\operations\migrate.mjs') --config $installedAdminCredential --migrations (Join-Path $InstallPath 'db\migrations')
-    if($LASTEXITCODE-ne0){throw 'Database migration failed; WDWELT was not started.'}
+    Invoke-DatabaseBackup 'pre-migration' $InstallPath
+    Invoke-DatabaseMigration $InstallPath
   }
   & $nodeExecutable (Join-Path $InstallPath 'db\operations\runtime-check.mjs') --config $installedRuntimeCredential --require-schema
   if($LASTEXITCODE-ne0){throw 'G2 程式帳號缺少資料表或讀寫權限；未啟動 WDWELT。'}

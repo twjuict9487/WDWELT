@@ -114,6 +114,18 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(manager).toContain("Join-Path $databaseRoot 'migrations\\002_password_recovery.sql'");
   });
 
+  it('backs up with the administrative config before an update can stop or replace production', () => {
+    const manager = source('install/wdwelt.ps1');
+    expect(manager).toContain("Invoke-DatabaseTool 'backup.mjs' @('--config',[string]$Config.adminDatabaseConfigPath");
+    const update = manager.slice(manager.indexOf('function Invoke-Update'), manager.indexOf('function Switch-DirectoryPair'));
+    expect(update.indexOf("Invoke-DatabaseBackup 'pre-migration' $package.Root")).toBeGreaterThan(-1);
+    expect(update.indexOf("Invoke-DatabaseBackup 'pre-migration' $package.Root")).toBeLessThan(update.indexOf("Acquire-MaintenanceLock 'update'"));
+    expect(update.indexOf("Invoke-DatabaseBackup 'pre-migration' $package.Root")).toBeLessThan(update.indexOf('Stop-Wdwelt -Maintenance'));
+    expect(update.indexOf('Stop-Wdwelt -Maintenance')).toBeLessThan(update.indexOf('Move-Item -LiteralPath $current -Destination $previous'));
+    expect(manager).toContain('Database tool failed：$ScriptName (exit $toolExitCode)');
+    expect(manager).toContain('Database backup failed: $($_.Exception.Message)');
+  });
+
   it('has no public tunnel, port-forwarding, or external runtime endpoint', () => {
     const runtime = [
       ...sourcesUnder('src'),

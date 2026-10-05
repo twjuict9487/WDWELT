@@ -43,12 +43,12 @@ try {
     catch { await new Promise((done) => setTimeout(done, 250)); }
   }
   assert.ok(connection, 'isolated MySQL started');
-  const secret = randomBytes(24).toString('hex');
+  const secret = `S3c!&^%#;='\"\\-${randomBytes(12).toString('hex')}`;
   await connection.query('CREATE DATABASE g2 CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci');
   for (const name of ['school_installer', 'school_g2', 'school_readonly']) {
-    await connection.query(`CREATE USER '${name}'@'localhost' IDENTIFIED BY '${secret}'`);
+    await connection.query(`CREATE USER '${name}'@'localhost' IDENTIFIED BY ${connection.escape(secret)}`);
   }
-  await connection.query("GRANT ALL PRIVILEGES ON g2.* TO 'school_installer'@'localhost'");
+  await connection.query("GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, INDEX, REFERENCES, CREATE VIEW, SHOW VIEW, TRIGGER ON g2.* TO 'school_installer'@'localhost'");
   await connection.query("GRANT SELECT, INSERT, UPDATE, DELETE ON g2.* TO 'school_g2'@'localhost'");
   await connection.query("GRANT SELECT ON g2.* TO 'school_readonly'@'localhost'");
   const accountSnapshot = async () => (await connection.query("SELECT User, Host, authentication_string FROM mysql.user WHERE User LIKE 'school_%' ORDER BY User"))[0];
