@@ -795,6 +795,7 @@ function Invoke-Package {
   Copy-Item (Join-Path $SourceRoot 'install\windows\restore.ps1') (Join-Path $output 'tools\database\restore.ps1')
   Copy-Item $PSCommandPath (Join-Path $output 'tools\wdwelt.ps1')
   Copy-Item (Join-Path $SourceRoot 'install\recovery.ps1') (Join-Path $output 'tools\recovery.ps1')
+  Copy-Item (Join-Path $SourceRoot 'install\target-recovery.ps1') (Join-Path $output 'tools\target-recovery.ps1')
   Copy-Item -LiteralPath $DeploymentSettingsPath -Destination (Join-Path $output 'tools\deployment.json')
   $nodeForPackage=(Get-Command node -ErrorAction Stop).Source
   & $nodeForPackage (Join-Path $SourceRoot 'scripts\build\copy-production-dependencies.mjs') $SourceRoot (Join-Path $output 'host\node_modules')
@@ -818,7 +819,7 @@ function Validate-Package([string]$Path) {
   if($reparsePoints.Count){throw 'Package 不可包含 symlink／junction／reparse point。'}
   $release=Read-Release $productionRoot
   if($manifest.version -ne $release.version -or $manifest.build -ne $release.build){throw 'Package manifest 與 build metadata 不一致。'}
-  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'recovery.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'operations\recovery.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $databaseRoot 'migrations\002_password_recovery.sql'),(Join-Path $databaseRoot 'migrations\003_recovery_config.sql'),(Join-Path $databaseRoot 'migrations\004_taipei_timestamps.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'recovery.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
+  foreach ($required in @((Join-Path $productionRoot 'index.html'),(Join-Path $productionRoot 'build-metadata.json'),(Join-Path $hostRoot 'server.mjs'),(Join-Path $hostRoot 'recovery.mjs'),(Join-Path $hostRoot 'node_modules\mysql2\package.json'),(Join-Path $databaseRoot 'operations\migrate.mjs'),(Join-Path $databaseRoot 'operations\runtime-check.mjs'),(Join-Path $databaseRoot 'operations\recovery.mjs'),(Join-Path $databaseRoot 'core\config.mjs'),(Join-Path $databaseRoot 'migrations\001_initial.sql'),(Join-Path $databaseRoot 'migrations\002_password_recovery.sql'),(Join-Path $databaseRoot 'migrations\003_recovery_config.sql'),(Join-Path $databaseRoot 'migrations\004_taipei_timestamps.sql'),(Join-Path $toolsRoot 'wdwelt.ps1'),(Join-Path $toolsRoot 'recovery.ps1'),(Join-Path $toolsRoot 'target-recovery.ps1'),(Join-Path $toolsRoot 'deployment.json'),(Join-Path $toolsRoot 'database\backup.ps1'),(Join-Path $toolsRoot 'database\restore.ps1'))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Package 缺少必要檔案：$required" }
   }
   $manifestFiles=@($manifest.files)

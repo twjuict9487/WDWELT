@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,8 +15,13 @@ if (!sameProjectRoot) throw new Error('Dependency source must be the WDWELT proj
 if (targetRoot === sourceRoot || targetRoot === resolve(sourceRoot, 'node_modules') || basename(targetRoot) !== 'node_modules') throw new Error('Invalid dependency target.');
 
 const lock = JSON.parse(readFileSync(resolve(sourceRoot, 'package-lock.json'), 'utf8'));
+const unsupportedRuntimePeers = Object.entries(lock.packages ?? {})
+  .filter(([path, metadata]) => path.startsWith('node_modules/') && metadata.peer === true)
+  .map(([path]) => path.replaceAll('\\', '/'))
+  .filter((path) => !path.startsWith('node_modules/@types/') && path !== 'node_modules/undici-types');
+if (unsupportedRuntimePeers.length) throw new Error(`Review runtime peer dependencies before packaging: ${unsupportedRuntimePeers.join(', ')}`);
 const packages = Object.entries(lock.packages ?? {})
-  .filter(([path, metadata]) => path.startsWith('node_modules/') && metadata.dev !== true)
+  .filter(([path, metadata]) => path.startsWith('node_modules/') && metadata.dev !== true && metadata.peer !== true)
   .map(([path]) => path.replaceAll('/', sep));
 
 if (!packages.includes(`node_modules${sep}mysql2`)) throw new Error('package-lock.json does not contain the mysql2 production dependency.');
@@ -32,5 +37,14 @@ for (const packagePath of packages) {
   mkdirSync(dirname(target), { recursive: true });
   cpSync(source, target, { recursive: true, dereference: true });
 }
+
+const removeTypeDeclarations = (directory) => {
+  for (const entry of readdirSync(directory)) {
+    const path = resolve(directory, entry);
+    if (statSync(path).isDirectory()) removeTypeDeclarations(path);
+    else if (entry.endsWith('.d.ts')) unlinkSync(path);
+  }
+};
+removeTypeDeclarations(targetRoot);
 
 console.log(`Copied ${packages.length} production dependency entries.`);

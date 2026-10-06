@@ -8,6 +8,7 @@
     "test:setup:db": "node tests/integration/existing-accounts.mjs",
     "dev": "vite",
     "build": "node scripts/build/build-production.mjs",
+    "package:target": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build/build-target-kit.ps1",
     "host": "node server/app/server.mjs --config config/development.json",
     "test:g2:lifecycle": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/integration/lifecycle.ps1",
     "db:preflight": "node db/operations/preflight.mjs",

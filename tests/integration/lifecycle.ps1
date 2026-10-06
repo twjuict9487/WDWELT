@@ -26,6 +26,7 @@ function New-Package([string]$Name,[string]$Version,[string]$Build,[switch]$Brok
   Copy-Item (Join-Path $ProjectRoot 'install\windows\restore.ps1') $root\tools\database\restore.ps1
   Copy-Item (Join-Path $ProjectRoot 'install\wdwelt.ps1') $root\tools\wdwelt.ps1
   Copy-Item (Join-Path $ProjectRoot 'install\recovery.ps1') $root\tools\recovery.ps1
+  Copy-Item (Join-Path $ProjectRoot 'install\target-recovery.ps1') $root\tools\target-recovery.ps1
   Copy-Item (Join-Path $ProjectRoot 'config\deployment.json') $root\tools\deployment.json
   & (Get-Command node).Source (Join-Path $ProjectRoot 'scripts\build\copy-production-dependencies.mjs') $ProjectRoot $root\host\node_modules | Out-Host
   if($LASTEXITCODE-ne0){throw 'Could not stage production dependencies.'}
@@ -115,6 +116,16 @@ try{
   Assert-True ((Invoke-RestMethod http://127.0.0.1:8080/health/live).version-eq'0.3.0') 'rollback without previous did not stop current host'
 
   $success=New-Package 'success' '0.2.1' 'integration-success'
+  $badAdmin=Join-Path $TestRoot 'bad-admin-db.json'
+  @{host='127.0.0.1';port=3306;database='g2';user='root';password='test';mysqlDumpPath='Z:\missing\mysqldump.exe'}|ConvertTo-Json|Set-Content -Encoding UTF8 $badAdmin
+  $config.adminDatabaseConfigPath=$badAdmin;$config.backupPath=(Join-Path $TestRoot 'backups');$config|ConvertTo-Json|Set-Content -Encoding UTF8 $ConfigPath
+  $pidBeforeBackupFailure=(Get-Content -Raw $TestRoot\run\host.pid.json|ConvertFrom-Json).pid
+  $backupFailed=$false
+  try{& $Tool update -ConfigPath $ConfigPath -PackagePath $success}catch{$backupFailed=$true}
+  Assert-True ($backupFailed-or$LASTEXITCODE-ne0) 'pre-migration backup failure aborted update'
+  Assert-True ((Get-Content -Raw $TestRoot\run\host.pid.json|ConvertFrom-Json).pid-eq$pidBeforeBackupFailure) 'backup failure did not stop the active host'
+  Assert-True ((Invoke-RestMethod http://127.0.0.1:8080/health/live).version-eq'0.3.0') 'backup failure did not replace the active release'
+  [void]$config.Remove('adminDatabaseConfigPath');[void]$config.Remove('backupPath');$config|ConvertTo-Json|Set-Content -Encoding UTF8 $ConfigPath
   $fakeRuntime=Join-Path $TestRoot 'runtime-db.json';$fakeAdmin=Join-Path $TestRoot 'admin-db.json';'{"host":"127.0.0.1","database":"g2","user":"test","password":"test"}'|Set-Content -Encoding UTF8 $fakeRuntime;Copy-Item $fakeRuntime $fakeAdmin
   $dryInstall=Join-Path $TestRoot 'dry run install target'
   Push-Location $env:SystemRoot
