@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { backupDatabase, buildMySqlDumpArguments, verifyBackupDump } from '../db/operations/backup.mjs';
 import { createTemporaryOptionFile } from '../db/core/mysql-option-file.mjs';
 
-const tables = ['users', 'sessions', 'courses', 'timetable_entries', 'course_progress', 'password_reset_tokens', 'schema_migrations'];
+const tables = ['users', 'sessions', 'courses', 'timetable_entries', 'course_progress', 'password_reset_tokens', 'recovery_config', 'schema_migrations'];
 const dump = ({ marker = '-- Dump completed', includedTables = tables } = {}) => [
   'CREATE DATABASE /*!32312 IF NOT EXISTS*/ `g2`;',
   'USE `g2` ;',
@@ -27,6 +27,17 @@ describe('database backup', () => {
     expect(incomplete.valid).toBe(false);
     expect(incomplete.missing).toContain('tables: schema_migrations');
     expect(verifyBackupDump(dump({ marker: '-- unfinished' })).missing).toContain('completed dump marker');
+  });
+
+  it('accepts an older pre-migration schema and requires tables for migrations already in its ledger', () => {
+    const legacyTables = tables.filter((table) => !['password_reset_tokens', 'recovery_config'].includes(table));
+    expect(verifyBackupDump(dump({ includedTables: legacyTables }), { label: 'pre-migration' }).valid).toBe(true);
+    const inconsistent = `${dump({ includedTables: legacyTables })}\nINSERT INTO \`schema_migrations\` VALUES ('002_password_recovery.sql','checksum');\n`;
+    expect(verifyBackupDump(inconsistent, { label: 'pre-migration' }).missing).toContain('tables: password_reset_tokens');
+    const recoveryMissing = `${dump({ includedTables: tables.filter((table) => table !== 'recovery_config') })}\nINSERT INTO \`schema_migrations\` VALUES ('003_recovery_config.sql','checksum');\n`;
+    expect(verifyBackupDump(recoveryMissing, { label: 'pre-migration' }).missing).toContain('tables: recovery_config');
+    const unrelatedData = `${dump({ includedTables: legacyTables })}\nINSERT INTO \`course_progress\` VALUES (1,'002_password_recovery.sql','',NOW());\n`;
+    expect(verifyBackupDump(unrelatedData, { label: 'pre-migration' }).valid).toBe(true);
   });
 
   it('uses an option file first and does not request routine or event privileges', () => {

@@ -7,7 +7,11 @@ import { loadDatabaseConfig, protectLocalFile } from '../core/config.mjs';
 import { createTemporaryOptionFile } from '../core/mysql-option-file.mjs';
 
 const argument = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : null; };
-const requiredTables = ['users', 'sessions', 'courses', 'timetable_entries', 'course_progress', 'password_reset_tokens', 'schema_migrations'];
+const requiredTables = ['users', 'sessions', 'courses', 'timetable_entries', 'course_progress', 'schema_migrations'];
+const migrationTableRequirements = [
+  { migration: '002_password_recovery.sql', table: 'password_reset_tokens' },
+  { migration: '003_recovery_config.sql', table: 'recovery_config' },
+];
 
 const removeIfPresent = (path) => { try { unlinkSync(path); } catch { /* best effort */ } };
 const cleanOutput = (value) => String(value ?? '').trim() || '(no output)';
@@ -28,6 +32,7 @@ export function verifyBackupDump(content, { database = 'g2', label = 'daily' } =
   const hasUse = new RegExp(`USE\\s+\`${escapedDatabase}\`\\s*;`, 'i').test(text);
   const hasCompletionMarker = /^-- Dump completed(?: on .*)?\s*$/im.test(text);
   const tables = new Set([...text.matchAll(/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+`([^`]+)`/gi)].map((match) => match[1].toLowerCase()));
+  const migrationLedgerData = [...text.matchAll(/INSERT\s+INTO\s+`schema_migrations`\s+VALUES\s*([^;]+);/gi)].map((match) => match[1]).join('\n');
   const missing = [];
   if (!text.trim()) missing.push('dump is empty');
   if (!hasDatabase) missing.push(`CREATE DATABASE ${database}`);
@@ -35,6 +40,9 @@ export function verifyBackupDump(content, { database = 'g2', label = 'daily' } =
   if (!hasCompletionMarker) missing.push('completed dump marker');
   if (!(label === 'pre-migration' && tables.size === 0)) {
     const missingTables = requiredTables.filter((table) => !tables.has(table));
+    for (const requirement of migrationTableRequirements) {
+      if (migrationLedgerData.includes(requirement.migration) && !tables.has(requirement.table)) missingTables.push(requirement.table);
+    }
     if (missingTables.length) missing.push(`tables: ${missingTables.join(', ')}`);
   }
   return { valid: missing.length === 0, missing, tables: [...tables] };
