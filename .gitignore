@@ -4,9 +4,6 @@ artifacts/
 runtime/
 /config/local/
 install/offline/
-test-db.js
-.deno-cache/
-deno.lock
 *.tsbuildinfo
 *.local
 .DS_Store

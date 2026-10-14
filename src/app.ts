@@ -13,6 +13,11 @@ import {
   removeTimetable,
   saveProgress,
   saveTimetable,
+  loadPushConfig,
+  savePushSubscription,
+  deletePushSubscription,
+  sendTestPush,
+  loadDebugReport,
   type AuthUser,
   type AuthSession,
 } from './api';
@@ -24,7 +29,6 @@ import {
 } from './drafts';
 import { formatBuildTime, loadBuildMetadata, loadHostHealth, type BuildMetadata } from './build-metadata';
 import { connectionTransition, type ConnectionState } from './connectivity';
-import { timetableDeletionImpact } from './deletion-impact';
 import { formatDiagnostics } from './diagnostics';
 import { readRememberedUsername, rememberUsername, sessionRemainingMs, SESSION_WARNING_MS } from './session';
 import {
@@ -34,7 +38,7 @@ import {
   type Preferences,
   type Theme,
 } from './preferences';
-import { debugModeEnabled, effectiveDebugDate } from './debug';
+import { debugModeEnabled, effectiveDebugDate, selfTestModeEnabled } from './debug';
 import {
   PERIODS,
   createDebugInstant,
@@ -133,6 +137,8 @@ let selectedGridCell: string | null = null;
 let progressTarget: ProgressTarget | null = null;
 let progressOriginalSnapshot: ProgressDraft | null = null;
 let debugNow: Date | null = null;
+let pushNotice = '';
+let debugReport = '';
 let timelineContextSignature = '';
 let expandedTimelineRole: TimelineRole | null = null;
 let undoRecord: UndoRecord | null = null;
@@ -169,6 +175,16 @@ function gridKey(weekday: number, period: number): string {
 
 function effectiveNow(): Date {
   return effectiveDebugDate(globalThis.location.search, debugNow);
+}
+
+function applicationServerKey(value: string): Uint8Array<ArrayBuffer> {
+  const padded=value.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-value.length%4)%4);
+  const raw=atob(padded); return Uint8Array.from(raw,(character)=>character.charCodeAt(0));
+}
+
+async function currentPushSubscription(): Promise<PushSubscription | null> {
+  if (!('serviceWorker' in navigator)) return null;
+  return (await navigator.serviceWorker.ready).pushManager.getSubscription();
 }
 
 function courseById(courseId: string): Course | undefined {
@@ -609,8 +625,8 @@ function renderDebugControls(): string {
   const time = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
   return `
     <section class="panel debug-panel" aria-labelledby="debug-title">
-      <h2 id="debug-title">測試時間控制</h2>
-      <p class="small-text">只在網址包含 <code>?debug=1</code> 時顯示。</p>
+      <h2 id="debug-title">台北時間模擬器</h2>
+      <p class="small-text">只影響這個瀏覽器畫面中的課表判斷，不修改伺服器時間、課表或推播排程。</p>
       <div class="field-row">
         <label>測試日期<input id="debug-date" type="date" value="${date}" /></label>
         <label>測試時間<input id="debug-time" type="time" value="${time}" /></label>
@@ -619,7 +635,13 @@ function renderDebugControls(): string {
         ${button('apply-debug-time', '套用測試時間', 'secondary')}
         ${button('reset-debug-time', '回到真實時間', 'secondary')}
       </div>
-      ${debugNow ? '<p class="status warning">目前正在使用固定測試時間。</p>' : ''}
+      <div class="button-row debug-presets">
+        <button class="button quiet" type="button" data-debug-time="08:00">第一節前</button>
+        <button class="button quiet" type="button" data-debug-time="09:05">下課空檔</button>
+        <button class="button quiet" type="button" data-debug-time="13:00">午休結束</button>
+        <button class="button quiet" type="button" data-debug-time="17:10">放學後</button>
+      </div>
+      ${debugNow ? `<p class="status warning">正在模擬：${escapeHtml(formatClock(debugNow, true))}（Asia/Taipei）</p>` : '<p class="status">目前使用真實時間。</p>'}
     </section>
   `;
 }
@@ -911,6 +933,12 @@ async function performUndo(): Promise<void> {
 }
 
 function bindDebugEvents(): void {
+  document.querySelectorAll<HTMLButtonElement>('[data-debug-time]').forEach((preset) => preset.addEventListener('click', () => {
+    const date = document.querySelector<HTMLInputElement>('#debug-date')?.value ?? '';
+    const time = preset.dataset.debugTime ?? '';
+    try { debugNow = createDebugInstant(date, time); render(); }
+    catch (error) { globalThis.alert(error instanceof Error ? error.message : '無法套用測試時間'); }
+  }));
   document.querySelector('#apply-debug-time')?.addEventListener('click', () => {
     const date = document.querySelector<HTMLInputElement>('#debug-date')?.value ?? '';
     const time = document.querySelector<HTMLInputElement>('#debug-time')?.value ?? '';
@@ -1113,6 +1141,37 @@ function renderProgress(): void {
   document.querySelector('#progress-cancel')?.addEventListener('click', requestBack);
 }
 
+async function collectDeveloperReport(): Promise<Record<string, unknown>> {
+  const now=effectiveNow();
+  const subscription=await currentPushSubscription().catch(()=>null);
+  const registration='serviceWorker' in navigator ? await Promise.race([
+    navigator.serviceWorker.ready,
+    new Promise<null>((resolve)=>globalThis.setTimeout(()=>resolve(null),1500)),
+  ]) : null;
+  const timeline=state.timetable ? getTimelineScheduleState(state.timetable,now) : null;
+  const backend=await loadDebugReport();
+  return {
+    checkedAt:new Date().toISOString(),
+    simulatedTime:debugNow ? now.toISOString() : null,
+    browser:{
+      online:navigator.onLine,
+      secureContext:globalThis.isSecureContext,
+      displayModeStandalone:globalThis.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && Boolean((navigator as Navigator & {standalone?:boolean}).standalone)),
+      notificationApi:'Notification' in globalThis,
+      notificationPermission:'Notification' in globalThis ? Notification.permission : 'unsupported',
+      serviceWorkerApi:'serviceWorker' in navigator,
+      serviceWorkerReady:Boolean(registration),
+      serviceWorkerControlled:Boolean(navigator.serviceWorker?.controller),
+      pushApi:'PushManager' in globalThis,
+      pushSubscribed:Boolean(subscription),
+      pushEndpointHost:subscription ? new URL(subscription.endpoint).hostname : null,
+    },
+    account:{username:authenticatedUser?.username ?? null,sessionExpiresAt:sessionExpiry?.expiresAt ?? null},
+    schedule:{hasTimetable:Boolean(state.timetable),courseCount:state.courses.length,entryCount:state.timetable?.entries.length ?? 0,timelineSignature:timeline?.signature ?? null,currentCourseId:timeline?.current?.entry.courseId ?? null,nextCourseId:timeline?.next?.entry.courseId ?? null},
+    backend,
+  };
+}
+
 function renderSettings(): void {
   const hasProgress = Object.keys(state.progressByCourse).length > 0;
   root.innerHTML = page('設定', `
@@ -1135,6 +1194,40 @@ function renderSettings(): void {
       <h2 id="timetable-settings-title">課表</h2>
       ${button('open-timetable-settings', '課表設定', 'secondary')}
     </section>
+    <section class="panel settings-group" aria-labelledby="notification-title">
+      <h2 id="notification-title">上課通知</h2>
+      <p class="small-text">預設提前 10 分鐘。iPhone 需先將網站加入主畫面。</p>
+      <label>提前提醒時間
+        <select id="push-reminder"><option value="5">5 分鐘</option><option value="10" selected>10 分鐘</option><option value="15">15 分鐘</option><option value="30">30 分鐘</option></select>
+      </label>
+      <div class="button-stack">
+        ${button('enable-push', '啟用這台裝置通知', 'secondary')}
+        ${button('disable-push', '停用這台裝置通知', 'quiet')}
+        ${button('test-push', '傳送測試通知', 'secondary')}
+      </div>
+      <p id="push-status" class="status" role="status">${escapeHtml(pushNotice)}</p>
+    </section>
+    ${selfTestModeEnabled(globalThis.location.search) ? `${renderDebugControls()}<section class="panel settings-group dev-panel" aria-labelledby="self-test-title">
+      <h2 id="self-test-title">WDWELT 開發驗證台</h2>
+      <p class="small-text">操作瀏覽器能力、PWA、Session、API、資料完整性與課表顯示。所有檢查預設唯讀；推播測試會真的傳送一則通知。</p>
+      <div class="button-stack">
+        ${button('run-self-test', '執行完整自動檢查', 'secondary')}
+        ${button('refresh-service-worker', '更新 Service Worker', 'secondary')}
+        ${button('copy-self-test', '複製檢查報告', 'quiet')}
+        ${button('debug-open-home', '回首頁驗證模擬時間', 'quiet')}
+      </div>
+      <pre id="self-test-output" class="debug-output" aria-live="polite">${escapeHtml(debugReport || '尚未執行。')}</pre>
+      <h3>人工驗證清單</h3>
+      <p class="small-text">勾選只保存在本分頁，不會寫入帳號或資料庫。</p>
+      <div class="debug-checklist">
+        <label><input type="checkbox" data-human-check="pwa" /> 已從 iPhone 主畫面開啟</label>
+        <label><input type="checkbox" data-human-check="background-push" /> App 在背景時收到測試推播</label>
+        <label><input type="checkbox" data-human-check="closed-push" /> App 完全關閉時收到測試推播</label>
+        <label><input type="checkbox" data-human-check="notification-click" /> 點通知能回到 WDWELT</label>
+        <label><input type="checkbox" data-human-check="persistent-login" /> 關閉再開仍保持登入</label>
+        <label><input type="checkbox" data-human-check="schedule-edit" /> 修改課表後只顯示最新課程</label>
+      </div>
+    </section>` : ''}
     <section class="panel settings-group" aria-labelledby="account-title">
       <h2 id="account-title">帳號</h2>
       <p>${authenticatedUser ? escapeHtml(authenticatedUser.username) : '無法確認'}</p>
@@ -1180,9 +1273,49 @@ function renderSettings(): void {
   document.querySelector('#open-timetable-settings')?.addEventListener('click', () => {
     navigate({ screen: 'timetable', intent: state.timetable ? 'edit' : 'create' });
   });
+  document.querySelector('#enable-push')?.addEventListener('click', async () => {
+    try {
+      const config=await loadPushConfig(); if(!config.configured||!config.publicKey) throw new Error('Host 尚未設定 VAPID');
+      if(!('serviceWorker' in navigator)||!('PushManager' in globalThis)) throw new Error('這個瀏覽器不支援 Web Push');
+      const permission=await Notification.requestPermission(); if(permission!=='granted') throw new Error('通知權限未允許');
+      const registration=await navigator.serviceWorker.register('/sw.js');
+      const subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:applicationServerKey(config.publicKey)});
+      const reminder=Number((document.querySelector<HTMLSelectElement>('#push-reminder'))?.value ?? 10);
+      await savePushSubscription(subscription.toJSON(),reminder); pushNotice=`已啟用，提前 ${reminder} 分鐘提醒。`;
+    } catch(error) { pushNotice=error instanceof Error?error.message:String(error); } render();
+  });
+  document.querySelector('#disable-push')?.addEventListener('click', async () => {
+    try { const subscription=await currentPushSubscription(); if(subscription){await deletePushSubscription(subscription.endpoint);await subscription.unsubscribe();} pushNotice='這台裝置的通知已停用。'; }
+    catch(error){pushNotice=error instanceof Error?error.message:String(error);} render();
+  });
+  document.querySelector('#test-push')?.addEventListener('click', async () => {
+    try { const subscription=await currentPushSubscription(); if(!subscription) throw new Error('請先啟用這台裝置通知'); await sendTestPush(subscription.endpoint); pushNotice='測試通知已送出。'; }
+    catch(error){pushNotice=error instanceof Error?error.message:String(error);} render();
+  });
+  document.querySelector('#run-self-test')?.addEventListener('click', async () => {
+    debugReport='正在檢查瀏覽器、PWA、Session、API、資料完整性與課表狀態…'; render();
+    try { debugReport=JSON.stringify(await collectDeveloperReport(),null,2); } catch(error){debugReport=error instanceof Error?error.message:String(error);} render();
+  });
+  document.querySelector('#refresh-service-worker')?.addEventListener('click', async () => {
+    try {
+      if(!('serviceWorker' in navigator)) throw new Error('此瀏覽器不支援 Service Worker');
+      const registration=await navigator.serviceWorker.getRegistration();
+      if(!registration) throw new Error('尚未註冊 Service Worker');
+      await registration.update(); pushNotice='Service Worker 更新檢查完成。';
+    } catch(error){pushNotice=error instanceof Error?error.message:String(error);} render();
+  });
+  document.querySelector('#copy-self-test')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(debugReport || '尚未執行檢查'); pushNotice='開發驗證報告已複製。'; }
+    catch { pushNotice='無法使用剪貼簿，請手動選取報告。'; } render();
+  });
+  document.querySelector('#debug-open-home')?.addEventListener('click',()=>navigate({screen:'home'}));
+  document.querySelectorAll<HTMLInputElement>('[data-human-check]').forEach((check)=>{
+    const key=`wdwelt.debug.check.${check.dataset.humanCheck}`;
+    try { check.checked=sessionStorage.getItem(key)==='1'; } catch { /* optional */ }
+    check.addEventListener('change',()=>{try{sessionStorage.setItem(key,check.checked?'1':'0');}catch{/* optional */}});
+  });
   document.querySelector('#delete-timetable')?.addEventListener('click', async () => {
-    const impact = timetableDeletionImpact(state);
-    const message = `確定刪除課表？\n\n將刪除：\n・課表項目 ${impact.timetableEntries} 筆\n・不再使用的班級 ${impact.unusedCourses} 個\n・隨班級刪除的進度 ${impact.progressRecords} 筆`;
+    const message = `確定移除所有課表時段？\n\n課程與進度會保留為歷史資料，不會永久刪除。之後重新加入同名課程時會恢復原有進度。`;
     if (!globalThis.confirm(message)) return;
     try { state = await removeTimetable(); }
     catch (error) { dataError = `${authErrorMessage(error)}；課表未刪除。`; render(); return; }
@@ -1211,6 +1344,7 @@ function renderSettings(): void {
     }
   });
   document.querySelector('#settings-back')?.addEventListener('click', requestBack);
+  bindDebugEvents();
 }
 
 function render(): void {

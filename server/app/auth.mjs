@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-export const SESSION_DURATION_SECONDS = 10 * 60 * 60;
+export const SESSION_DURATION_SECONDS = 180 * 24 * 60 * 60;
+export const SESSION_RENEWAL_WINDOW_SECONDS = 30 * 24 * 60 * 60;
 
 export {
   derivePasswordHash,
@@ -33,10 +34,10 @@ export function readSessionCookie(header) {
   return null;
 }
 
-export function sessionCookie(token, maxAgeSeconds) {
-  return `wdwelt_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeSeconds}`;
+export function sessionCookie(token, maxAgeSeconds, { secure = false } = {}) {
+  return `wdwelt_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`;
 }
 
-export function clearSessionCookie() {
-  return 'wdwelt_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0';
+export function clearSessionCookie({ secure = false } = {}) {
+  return `wdwelt_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure ? '; Secure' : ''}`;
 }

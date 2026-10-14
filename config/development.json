@@ -10,6 +10,7 @@
   "backupPath": "../runtime/backups",
   "databaseConfigPath": "local/database.runtime.json",
   "adminDatabaseConfigPath": "local/database.admin.json",
+  "pushConfigPath": "local/push.json",
   "mysqlServiceName": "MySQL80",
   "healthIntervalSeconds": 60,
   "healthTimeoutSeconds": 5,

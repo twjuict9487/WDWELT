@@ -106,3 +106,11 @@ export async function removeProgress(courseId: string): Promise<void> {
 export async function clearProgress(): Promise<void> {
   await request('/api/progress', { method: 'DELETE' });
 }
+
+export interface PushConfig { configured: boolean; publicKey: string | null; defaultReminderMinutes: number }
+export const loadPushConfig = (): Promise<PushConfig> => request('/api/push/config');
+export const savePushSubscription = (subscription: PushSubscriptionJSON, reminderMinutes: number): Promise<{enabled:boolean;reminderMinutes:number}> =>
+  request('/api/push/subscription', { method:'PUT', body:JSON.stringify({ subscription, reminderMinutes }) });
+export const deletePushSubscription = (endpoint: string): Promise<void> => request('/api/push/subscription', { method:'DELETE', body:JSON.stringify({endpoint}) });
+export const sendTestPush = (endpoint: string): Promise<void> => request('/api/push/test', { method:'POST', body:JSON.stringify({endpoint}) });
+export const loadDebugReport = (): Promise<Record<string, unknown>> => request('/api/debug/report');

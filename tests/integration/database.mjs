@@ -119,15 +119,18 @@ try {
   const loginA = await api(base, '/api/auth/login', { method: 'POST', body: { username: 'TeacherA', password: '111' } });
   const cookieA = loginA.cookie;
   assert(loginA.response.status === 200 && cookieA?.includes('HttpOnly') && cookieA?.includes('SameSite=Strict') && !cookieA?.includes('Secure'), 'login set the LAN-compatible opaque session cookie');
-  assert(cookieA?.includes(`Max-Age=${SESSION_DURATION_SECONDS}`) && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) <= SESSION_DURATION_SECONDS * 1000 && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) > (SESSION_DURATION_SECONDS - 5) * 1000, 'login expiry and cookie last ten hours from creation');
+  assert(cookieA?.includes(`Max-Age=${SESSION_DURATION_SECONDS}`) && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) <= SESSION_DURATION_SECONDS * 1000 && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) > (SESSION_DURATION_SECONDS - 5) * 1000, 'login expiry and cookie last 180 days from creation');
   assert((await api(base, '/api/auth/me')).response.status === 401, 'unauthenticated me returned 401');
   const meA = await api(base, '/api/auth/me', { cookie: cookieA });
-  assert(meA.value.user.username === 'TeacherA' && meA.value.expiresAt === loginA.value.expiresAt, 'session cookie restored identity without extending expiry');
+  assert(meA.value.user.username === 'TeacherA' && meA.value.expiresAt === loginA.value.expiresAt, 'session cookie restored identity and does not churn expiry outside the renewal window');
 
   const tokenA = cookieToken(cookieA);
   const storedSession = await database.execute('SELECT token_hash, expires_at FROM sessions WHERE token_hash = ?', [hashSessionToken(tokenA)]);
   assert(storedSession.length === 1 && !Buffer.from(storedSession[0].token_hash).includes(Buffer.from(tokenA)), 'database stored only the session token digest');
-  assert(storedSession[0].expires_at.getTime() === Date.parse(loginA.value.expiresAt), 'read requests did not change database session expiry');
+  assert(storedSession[0].expires_at.getTime() === Date.parse(loginA.value.expiresAt), 'read requests outside the renewal window did not change database session expiry');
+  await database.execute('UPDATE sessions SET expires_at=DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 29 DAY) WHERE token_hash=?',[hashSessionToken(tokenA)]);
+  const renewedA=await api(base,'/api/auth/me',{cookie:cookieA});
+  assert(renewedA.cookie?.includes(`Max-Age=${SESSION_DURATION_SECONDS}`) && Date.parse(renewedA.value.expiresAt)-Date.parse(renewedA.value.serverTime)>(SESSION_DURATION_SECONDS-5)*1000,'active session inside the 30-day window safely renewed to 180 days');
   const credentialRows = await database.execute("SELECT COUNT(*) AS plaintextColumn FROM information_schema.columns WHERE table_schema = ? AND table_name = 'users' AND column_name = 'password'", [testDatabase]);
   assert(Number(credentialRows[0].plaintextColumn) === 0, 'plaintext password column no longer existed');
 
@@ -160,10 +163,12 @@ try {
   assert(crossUserRejected, 'database constraint rejected cross-user timetable reference');
 
   const removedA = await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [] } });
-  assert(removedA.value.state.courses.length === 0 && (await api(base, `/api/progress/${courseA}`, { cookie: cookieA })).response.status === 404, 'last timetable occurrence deletes the unused user-owned course and cascades its progress');
-  assert((await api(base, '/api/courses', { cookie: cookieB })).value.courses[0].courseId === courseB, 'orphan cleanup leaves another user same-name course intact');
+  const archivedProgress = await api(base, `/api/progress/${courseA}`, { cookie: cookieA });
+  assert(removedA.value.state.courses.length === 0 && archivedProgress.response.status === 200 && archivedProgress.value.progress.progress === 'P.61', 'last timetable occurrence archives the course and preserves progress');
+  assert((await api(base, '/api/courses', { cookie: cookieB })).value.courses[0].courseId === courseB, 'course archival leaves another user same-name course intact');
 
-  await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [{ weekday: 1, period: 1, className: '307' }] } });
+  const restoredCourse = await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [{ weekday: 1, period: 1, className: '307' }] } });
+  assert(restoredCourse.value.state.courses[0].courseId === courseA && restoredCourse.value.state.progressByCourse[courseA].progress === 'P.61', 're-adding an archived course restores its original identity and progress');
   await database.query(`CREATE TRIGGER reject_test_period BEFORE INSERT ON timetable_entries FOR EACH ROW
     BEGIN IF NEW.period = 2 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'integration rollback'; END IF; END`);
   const failedReplace = await api(base, '/api/timetable', { method: 'PUT', cookie: cookieA, body: { entries: [{ weekday: 1, period: 2, className: '308' }] } });
@@ -185,7 +190,7 @@ try {
     database.execute('SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?', [testDatabase]),
     database.execute('SELECT COUNT(*) AS count FROM schema_migrations'),
   ]);
-  assert(Number(tableCount[0].count) === 8 && Number(migrationCount[0].count) === 4, 'migrations created application tables and normalized timestamps to Taipei');
+  assert(Number(tableCount[0].count) === 10 && Number(migrationCount[0].count) === 7, 'migrations created lifecycle, session and push tables with Taipei timestamps');
   console.log(`DB integration passed: ${checks.length} checks in ${testDatabase}`);
   for (const check of checks) console.log(`  PASS ${check}`);
 } finally {

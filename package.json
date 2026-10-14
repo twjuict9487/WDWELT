@@ -10,9 +10,15 @@
     "build": "node scripts/build/build-production.mjs",
     "package:target": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build/build-target-kit.ps1",
     "host": "node server/app/server.mjs --config config/development.json",
+    "host:funnel": "node server/app/server.mjs --config config/local/funnel.host.json",
+    "funnel": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/tailscale-funnel.ps1",
     "test:g2:lifecycle": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/integration/lifecycle.ps1",
     "db:preflight": "node db/operations/preflight.mjs",
     "db:migrate": "node db/operations/migrate.mjs",
+    "db:integrity": "node db/operations/integrity.mjs",
+    "push:generate-vapid": "node db/operations/generate-vapid.mjs",
+    "push:diagnostics": "node db/operations/push-diagnostics.mjs",
+    "sessions:revoke": "node db/operations/sessions.mjs",
     "test:db": "node tests/integration/database.mjs",
     "test:restore": "node tests/integration/restore-database.mjs",
     "soak:g2": "node tests/integration/soak.mjs",
@@ -29,6 +35,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "mysql2": "^3.24.3"
+    "mysql2": "^3.24.3",
+    "web-push": "^3.6.7"
   }
 }

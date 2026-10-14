@@ -1,7 +1,7 @@
 export const RESET_SECONDS = 10 * 60;
 const cookieName = 'wdwelt_reset';
-export function resetCookie(token = '', seconds = 0) {
-  return `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/api/auth/recovery; Max-Age=${seconds}`;
+export function resetCookie(token = '', seconds = 0, { secure = false } = {}) {
+  return `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/api/auth/recovery; Max-Age=${seconds}${secure ? '; Secure' : ''}`;
 }
 
 export function readResetCookie(header) {

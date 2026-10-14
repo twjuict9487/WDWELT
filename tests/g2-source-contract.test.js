@@ -99,11 +99,12 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(app).toContain('aria-label="${stateLabel}${escapeHtml(entry.className');
   });
 
-  it('removes only uniquely owned courses after their last timetable reference is gone', () => {
+  it('archives unused courses and preserves their progress', () => {
     const api = source('server/app/api.mjs');
     expect(api).toContain('LEFT JOIN timetable_entries t ON t.course_id = c.id');
-    expect(api).toContain('WHERE c.user_id = ? AND t.course_id IS NULL');
-    expect(api.match(/await deleteUnusedCourses\(transaction, user\.id\)/g)).toHaveLength(2);
+    expect(api).toContain('SET c.archived_at = CURRENT_TIMESTAMP(3)');
+    expect(api.match(/await archiveUnusedCourses\(transaction, user\.id\)/g)).toHaveLength(2);
+    expect(api).not.toContain('DELETE c FROM courses c');
   });
 
   it('expands database-tool wildcards during installation', () => {
@@ -126,7 +127,7 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(manager).toContain('Database backup failed: $($_.Exception.Message)');
   });
 
-  it('has no public tunnel, port-forwarding, or external runtime endpoint', () => {
+  it('keeps the browser runtime same-origin and limits public tunneling to the reviewed Funnel adapter', () => {
     const runtime = [
       ...sourcesUnder('src'),
       ...sourcesUnder('server/app'),
@@ -135,10 +136,16 @@ describe('G2 source-of-truth and secret boundaries', () => {
       source('index.html'),
     ].join('\n');
 
-    expect(runtime).not.toMatch(/\b(?:cloudflare|ngrok|tailscale|funnel|upnp|portproxy|port\s*forward|reverse\s*proxy)\b/i);
-    expect(runtime).not.toMatch(/https?:\/\/(?!localhost\b|127\.0\.0\.1\b)/i);
+    expect(runtime).not.toMatch(/\b(?:cloudflare|ngrok|upnp|portproxy|port\s*forward)\b/i);
+    expect(runtime).not.toMatch(/https?:\/\/(?!localhost\b|127\.0\.0\.1\b)[a-z0-9]/i);
     expect(source('src/api.ts')).toContain('fetch(path');
     expect(source('db/operations/bootstrap.mjs')).toContain("host: '127.0.0.1', port: 3306");
+    const funnel = source('install/tailscale-funnel.ps1');
+    expect(funnel).toContain("funnel --bg --https=443 http://127.0.0.1:8080");
+    expect(funnel).toContain("allowRegistration = $false");
+    expect(funnel).toContain("databaseConfigPath = 'database.runtime.json'");
+    expect(funnel).toContain('Assert-LoopbackListeners');
+    expect(funnel).toContain("MySQL classic/X listener 不是 localhost；拒絕啟用 Funnel");
   });
 
   it('keeps host and MySQL listeners scoped to the configured machine', () => {

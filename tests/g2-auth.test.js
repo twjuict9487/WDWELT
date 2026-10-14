@@ -37,7 +37,9 @@ describe('G2 authentication primitives', () => {
     expect(cookie).toContain('SameSite=Strict');
     expect(cookie).toContain('Path=/');
     expect(cookie).not.toContain('Secure');
+    expect(sessionCookie(token, 3600, { secure: true })).toContain('; Secure');
     expect(readSessionCookie(cookie)).toBe(token);
     expect(clearSessionCookie()).toContain('Max-Age=0');
+    expect(clearSessionCookie({ secure: true })).toContain('; Secure');
   });
 });

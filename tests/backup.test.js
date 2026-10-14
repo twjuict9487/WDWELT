@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { backupDatabase, buildMySqlDumpArguments, verifyBackupDump } from '../db/operations/backup.mjs';
 import { createTemporaryOptionFile } from '../db/core/mysql-option-file.mjs';
 
-const tables = ['users', 'sessions', 'courses', 'timetable_entries', 'course_progress', 'password_reset_tokens', 'recovery_config', 'schema_migrations'];
+const tables = ['users', 'sessions', 'courses', 'timetable_entries', 'course_progress', 'password_reset_tokens', 'recovery_config', 'push_subscriptions', 'push_deliveries', 'schema_migrations'];
 const dump = ({ marker = '-- Dump completed', includedTables = tables } = {}) => [
   'CREATE DATABASE /*!32312 IF NOT EXISTS*/ `g2`;',
   'USE `g2` ;',
@@ -30,7 +30,7 @@ describe('database backup', () => {
   });
 
   it('accepts an older pre-migration schema and requires tables for migrations already in its ledger', () => {
-    const legacyTables = tables.filter((table) => !['password_reset_tokens', 'recovery_config'].includes(table));
+    const legacyTables = tables.filter((table) => !['password_reset_tokens', 'recovery_config', 'push_subscriptions', 'push_deliveries'].includes(table));
     expect(verifyBackupDump(dump({ includedTables: legacyTables }), { label: 'pre-migration' }).valid).toBe(true);
     const inconsistent = `${dump({ includedTables: legacyTables })}\nINSERT INTO \`schema_migrations\` VALUES ('002_password_recovery.sql','checksum');\n`;
     expect(verifyBackupDump(inconsistent, { label: 'pre-migration' }).missing).toContain('tables: password_reset_tokens');

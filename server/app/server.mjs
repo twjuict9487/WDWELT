@@ -10,10 +10,12 @@ import { createApiHandler } from './api.mjs';
 import { DatabaseManager, UnavailableDatabaseManager } from './db.mjs';
 import { loadDatabaseConfig } from '../../db/core/config.mjs';
 import { toTaipeiIsoString } from '../../db/core/time.mjs';
+import { applySecurityHeaders, createSecurityPolicy } from './security.mjs';
+import { createPushService, loadPushConfig } from './push.mjs';
 
 const hostDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = dirname(dirname(hostDir));
-const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql', '003_recovery_config.sql', '004_taipei_timestamps.sql'].map((id) => ({
+const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql', '003_recovery_config.sql', '004_taipei_timestamps.sql', '005_course_lifecycle.sql', '006_persistent_sessions.sql', '007_web_push.sql'].map((id) => ({
   id,
   checksum: createHash('sha256').update(readFileSync(resolve(projectRoot, 'db', 'migrations', id), 'utf8').replace(/^\uFEFF/, '')).digest('hex'),
 }));
@@ -23,6 +25,7 @@ const valueAfter = (name, fallback) => { const index = args.indexOf(name); retur
 const configArgument = valueAfter('--config', 'config/development.json');
 const configPath = isAbsolute(configArgument) ? configArgument : resolve(projectRoot, configArgument);
 const config = readJsonFile(configPath);
+const security = createSecurityPolicy(config);
 const configDirectory = dirname(configPath);
 const configuredPath = (value) => isAbsolute(value) ? value : resolve(configDirectory, value);
 const installRoot = configuredPath(config.installPath);
@@ -55,7 +58,11 @@ try {
   database = new UnavailableDatabaseManager({}, log);
 }
 database.start();
-const apiHandler = createApiHandler({ database, log });
+let pushService = null;
+try { pushService = createPushService({ database, config: loadPushConfig(config.pushConfigPath ? configuredPath(config.pushConfigPath) : null), log }); }
+catch (error) { log('error', 'push_config_invalid', error.message); }
+pushService?.start();
+const apiHandler = createApiHandler({ database, pushService, log, security });
 const currentMigration = () => database.currentMigration();
 const checkApplicationDatabase = async () => {
   if (!await database.checkReady()) return false;
@@ -66,6 +73,7 @@ const checkApplicationDatabase = async () => {
 };
 const staticHandler = createRequestHandler({ root, startedAt, checkDatabase: checkApplicationDatabase, currentMigration, databaseStatus: () => database.status });
 const server = createServer(async (request, response) => {
+  applySecurityHeaders(response, security);
   if (await apiHandler(request, response)) return;
   await staticHandler(request, response);
 });
@@ -102,6 +110,7 @@ const shutdown = (signal) => {
   closing = true;
   log('info', 'stop', `Graceful stop requested (${signal})`);
   server.close(async () => {
+    pushService?.stop();
     try { await database.close(); } catch { /* process is stopping */ }
     try { unlinkSync(pidPath); } catch { /* stale PID is handled by manager */ }
     process.exit(0);

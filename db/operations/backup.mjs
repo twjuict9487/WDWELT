@@ -11,6 +11,8 @@ const requiredTables = ['users', 'sessions', 'courses', 'timetable_entries', 'co
 const migrationTableRequirements = [
   { migration: '002_password_recovery.sql', table: 'password_reset_tokens' },
   { migration: '003_recovery_config.sql', table: 'recovery_config' },
+  { migration: '007_web_push.sql', table: 'push_subscriptions' },
+  { migration: '007_web_push.sql', table: 'push_deliveries' },
 ];
 
 const removeIfPresent = (path) => { try { unlinkSync(path); } catch { /* best effort */ } };

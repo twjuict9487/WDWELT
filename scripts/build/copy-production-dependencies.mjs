@@ -25,6 +25,7 @@ const packages = Object.entries(lock.packages ?? {})
   .map(([path]) => path.replaceAll('/', sep));
 
 if (!packages.includes(`node_modules${sep}mysql2`)) throw new Error('package-lock.json does not contain the mysql2 production dependency.');
+if (!packages.includes(`node_modules${sep}web-push`)) throw new Error('package-lock.json does not contain the web-push production dependency.');
 if (existsSync(targetRoot)) rmSync(targetRoot, { recursive: true, force: true });
 mkdirSync(targetRoot, { recursive: true });
 

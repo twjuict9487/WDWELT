@@ -1,5 +1,10 @@
 export function debugModeEnabled(search: string): boolean {
-  return new URLSearchParams(search).get('debug') === '1';
+  const value = new URLSearchParams(search).get('debug');
+  return value === '0' || value === '1';
+}
+
+export function selfTestModeEnabled(search: string): boolean {
+  return new URLSearchParams(search).get('debug') === '0';
 }
 
 export function effectiveDebugDate(search: string, debugNow: Date | null, liveNow = new Date()): Date {

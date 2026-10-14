@@ -21,6 +21,13 @@
   text-rendering: optimizeLegibility;
 }
 
+.debug-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow: auto; }
+.debug-presets { flex-wrap: wrap; }
+.debug-checklist { display: grid; gap: 10px; }
+.debug-checklist label { display: flex; align-items: flex-start; gap: 10px; }
+.debug-checklist input { width: 1.2rem; height: 1.2rem; margin-top: 0.1rem; }
+.dev-panel h3 { margin: 20px 0 8px; }
+
 .weekly-overview h2 { font-size: 1.15em; }
 .weekly-days { display: grid; gap: 0; }
 .weekly-day h3 { color: var(--text-muted); font-size: var(--font-small); margin: 20px 0 8px; }
