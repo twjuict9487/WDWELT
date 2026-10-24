@@ -13,7 +13,7 @@ import {
 } from './auth.mjs';
 import { DatabaseUnavailableError } from './db.mjs';
 import { readResetCookie, resetCookie, RESET_SECONDS } from './recovery.mjs';
-import { assertRequestOrigin, createAuthRateLimiter } from './security.mjs';
+import { assertRequestOrigin, createAuthRateLimiter, createFixedWindowLimiter, trustworthyClientKey } from './security.mjs';
 import { endpointHash } from './push.mjs';
 
 import { readRecoveryConfig, recoveryStatus, verifyRecoveryPassword } from '../../db/core/recovery-config.mjs';
@@ -26,7 +26,7 @@ const MAX_NOTE = 300;
 const DUMMY_LOGIN_CREDENTIAL = await hashPassword('wdwelt-invalid-account-password');
 
 class HttpError extends Error {
-  constructor(status, message, details = null) { super(message); this.status = status; this.details = details; }
+  constructor(status, message, details = null, headers = {}) { super(message); this.status = status; this.details = details; this.headers = headers; }
 }
 
 function sendJson(response, status, body, headers = {}) {
@@ -72,7 +72,7 @@ async function authenticatedUser(request, response, database, security) {
   const token = readSessionCookie(request.headers.cookie);
   if (!token) throw new HttpError(401, '請先登入');
   const rows = await database.execute(
-    `SELECT u.id, u.username, s.expires_at AS session_expires_at, CURRENT_TIMESTAMP(3) AS server_time,
+    `SELECT u.id, u.username, u.account_role, u.account_status, u.must_change_password, s.expires_at AS session_expires_at, CURRENT_TIMESTAMP(3) AS server_time,
             TIMESTAMPDIFF(SECOND, CURRENT_TIMESTAMP(3), s.expires_at) AS remaining_seconds
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP(3)
@@ -80,6 +80,10 @@ async function authenticatedUser(request, response, database, security) {
     [hashSessionToken(token)],
   );
   if (!rows.length) throw new HttpError(401, 'Session 已失效，請重新登入');
+  if (rows[0].account_status === 'disabled') {
+    await database.execute('DELETE FROM sessions WHERE token_hash = ?', [hashSessionToken(token)]);
+    throw new HttpError(401, 'Account is disabled.');
+  }
   let expiresAt = rows[0].session_expires_at;
   if (Number(rows[0].remaining_seconds) <= SESSION_RENEWAL_WINDOW_SECONDS) {
     await database.execute('UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP(3), expires_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND) WHERE token_hash = ?', [SESSION_DURATION_SECONDS, hashSessionToken(token)]);
@@ -90,7 +94,8 @@ async function authenticatedUser(request, response, database, security) {
   } else {
     await database.execute('UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE token_hash = ?', [hashSessionToken(token)]);
   }
-  return { id: Number(rows[0].id), username: rows[0].username, token, expiresAt: iso(expiresAt), serverTime: iso(rows[0].server_time) };
+  await database.execute('UPDATE users SET last_seen_at=CURRENT_TIMESTAMP(3) WHERE id=? AND (last_seen_at IS NULL OR last_seen_at<DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 1 MINUTE))', [rows[0].id]);
+  return { id: Number(rows[0].id), username: rows[0].username, role: rows[0].account_role, token, mustChangePassword: Boolean(rows[0].must_change_password), expiresAt: iso(expiresAt), serverTime: iso(rows[0].server_time) };
 }
 
 async function loadState(database, userId, adapter = database) {
@@ -147,16 +152,29 @@ function validateTimetableBody(body) {
   });
 }
 
-export function createApiHandler({ database, pushService = null, log = () => {}, security = {
+export function createApiHandler({ database, pushService = null, log = () => {}, requestMonitor = null, security = {
   publicOrigin: 'http://localhost', secureCookies: false, requireSameOrigin: false,
   allowRegistration: true, allowMasterRecovery: true, minimumPasswordLength: 3, minimumRecoveryKeyLength: 3, rateLimit: null,
+  limits: null,
 } }) {
   const sessionSeconds = SESSION_DURATION_SECONDS;
   const limiter = createAuthRateLimiter(security.rateLimit);
+  const limits = security.limits ?? null;
+  const routeLimiter = limits ? createFixedWindowLimiter(limits) : null;
+  const limited = (scope, key, rule) => {
+    if (!routeLimiter || !rule) return;
+    const result = routeLimiter.consume(scope, key, rule);
+    if (!result.allowed) {
+      log('warning', 'rate_limit_violation', `${scope} rate limit exceeded.`);
+      throw new HttpError(429, 'Too many requests. Please retry later.', null, { 'Retry-After': String(result.retryAfter) });
+    }
+  };
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (!url.pathname.startsWith('/api/')) return false;
     try {
+      const clientKey = trustworthyClientKey(request, security);
+      limited('general', clientKey, limits?.general);
       assertRequestOrigin(request, security);
       if (url.pathname === '/api/auth/recovery/status' && request.method === 'GET') {
         if (!security.allowMasterRecovery) {
@@ -172,6 +190,7 @@ export function createApiHandler({ database, pushService = null, log = () => {},
         if (!security.allowMasterRecovery) throw new HttpError(404, '找不到 API route');
         response.setHeader('Set-Cookie', resetCookie('', 0, { secure: security.secureCookies }));
         const body = await readJson(request);
+        limited('recovery-source', clientKey, limits?.recovery);
         if (limiter && !limiter.allowRecovery(body.username ?? 'invalid')) {
           log('warning', 'recovery_rate_limited', 'Recovery verification rate limited.');
           throw new HttpError(429, '嘗試次數過多，請稍後再試。');
@@ -240,6 +259,7 @@ export function createApiHandler({ database, pushService = null, log = () => {},
       }
 
       if (url.pathname === '/api/auth/register' && request.method === 'POST') {
+        limited('registration-source', clientKey, limits?.registration);
         if (!security.allowRegistration) throw new HttpError(404, '找不到 API route');
         const body = await readJson(request);
         const { username, normalizedUsername } = normalizeUsername(body.username);
@@ -261,7 +281,7 @@ export function createApiHandler({ database, pushService = null, log = () => {},
 
       if (url.pathname === '/api/auth/login' && request.method === 'POST') {
         const body = await readJson(request);
-        if (limiter && !limiter.allowLogin(body.username ?? 'invalid')) {
+        if (limiter && !limiter.isLoginAllowed(body.username ?? 'invalid')) {
           log('warning', 'login_rate_limited', 'Login rate limited.');
           throw new HttpError(429, '嘗試次數過多，請稍後再試。');
         }
@@ -272,7 +292,7 @@ export function createApiHandler({ database, pushService = null, log = () => {},
           if (body.password.length < security.minimumPasswordLength) throw new Error('public password too short');
         }
         catch { throw new HttpError(401, '帳號或密碼錯誤'); }
-        const rows = await database.execute('SELECT id, username, password_salt, password_hash, password_parameters FROM users WHERE normalized_username = ? LIMIT 1', [normalized.normalizedUsername]);
+        const rows = await database.execute('SELECT id, username, password_salt, password_hash, password_parameters, account_role, account_status, must_change_password FROM users WHERE normalized_username = ? LIMIT 1', [normalized.normalizedUsername]);
         const account = rows[0];
         const parameters = account ? (typeof account.password_parameters === 'string' ? JSON.parse(account.password_parameters) : account.password_parameters) : DUMMY_LOGIN_CREDENTIAL.parameters;
         const passwordMatches = await verifyPassword(
@@ -282,14 +302,25 @@ export function createApiHandler({ database, pushService = null, log = () => {},
           parameters,
         );
         if (!account || !passwordMatches) {
+          limiter?.recordLoginFailure(body.username ?? 'invalid');
           log('warning', 'login_failure', 'Login rejected.');
           throw new HttpError(401, '帳號或密碼錯誤');
         }
+        if (account.account_status === 'disabled') {
+          limiter?.recordLoginFailure(body.username ?? 'invalid');
+          log('warning', 'login_disabled_account', 'Disabled account login rejected.');
+          throw new HttpError(401, '帳號或密碼錯誤');
+        }
+        limiter?.clearLoginFailures(body.username ?? 'invalid');
         const { token, tokenHash } = createSessionToken();
-        await database.execute('INSERT INTO sessions (token_hash, user_id, last_seen_at, expires_at) VALUES (?, ?, CURRENT_TIMESTAMP(3), DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND))', [tokenHash, account.id, sessionSeconds]);
-        const [session] = await database.execute('SELECT expires_at, CURRENT_TIMESTAMP(3) AS server_time FROM sessions WHERE token_hash = ?', [tokenHash]);
+        const session = await database.transaction(async (transaction) => {
+          await transaction.execute('UPDATE users SET last_seen_at=CURRENT_TIMESTAMP(3) WHERE id=?', [account.id]);
+          await transaction.execute('INSERT INTO sessions (token_hash, user_id, last_seen_at, expires_at) VALUES (?, ?, CURRENT_TIMESTAMP(3), DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND))', [tokenHash, account.id, sessionSeconds]);
+          const [created] = await transaction.execute('SELECT expires_at, CURRENT_TIMESTAMP(3) AS server_time FROM sessions WHERE token_hash = ?', [tokenHash]);
+          return created;
+        });
         log('info', 'login_success', 'Login succeeded.');
-        sendJson(response, 200, { authenticated: true, user: { id: Number(account.id), username: account.username }, expiresAt: iso(session.expires_at), serverTime: iso(session.server_time) }, { 'Set-Cookie': sessionCookie(token, sessionSeconds, { secure: security.secureCookies }) });
+        sendJson(response, 200, { authenticated: true, user: { id: Number(account.id), username: account.username, role: account.account_role }, mustChangePassword: Boolean(account.must_change_password), expiresAt: iso(session.expires_at), serverTime: iso(session.server_time) }, { 'Set-Cookie': sessionCookie(token, sessionSeconds, { secure: security.secureCookies }) });
         return true;
       }
 
@@ -303,11 +334,73 @@ export function createApiHandler({ database, pushService = null, log = () => {},
 
       if (url.pathname === '/api/auth/me' && request.method === 'GET') {
         const user = await authenticatedUser(request, response, database, security);
-        sendJson(response, 200, { authenticated: true, user: { id: user.id, username: user.username }, expiresAt: user.expiresAt, serverTime: user.serverTime });
+        sendJson(response, 200, { authenticated: true, user: { id: user.id, username: user.username, role: user.role }, mustChangePassword: user.mustChangePassword, expiresAt: user.expiresAt, serverTime: user.serverTime });
         return true;
       }
 
       const user = await authenticatedUser(request, response, database, security);
+      if (url.pathname === '/api/privileged/monitor' && request.method === 'GET') {
+        if (user.role !== 'privileged') throw new HttpError(403, 'Privileged access required.');
+        const accounts = await database.execute(`SELECT u.id,u.username,u.admin_notes AS private_label,u.account_role,u.account_status,u.created_at,u.last_seen_at,
+          TIMESTAMPDIFF(DAY,u.created_at,CURRENT_TIMESTAMP(3)) AS age_days,
+          TIMESTAMPDIFF(DAY,COALESCE(u.last_seen_at,u.created_at),CURRENT_TIMESTAMP(3)) AS inactive_days,
+          (SELECT COUNT(*) FROM sessions s WHERE s.user_id=u.id) AS session_count,
+          (SELECT COUNT(*) FROM courses c WHERE c.user_id=u.id) AS course_count,
+          (SELECT COUNT(*) FROM timetable_entries t WHERE t.user_id=u.id) AS timetable_count,
+          (SELECT COUNT(*) FROM course_progress p JOIN courses c2 ON c2.id=p.course_id WHERE c2.user_id=u.id) AS progress_count,
+          (SELECT COUNT(*) FROM push_subscriptions ps WHERE ps.user_id=u.id) AS push_count
+          FROM users u ORDER BY u.id`);
+        const accountReview = accounts.map((account) => {
+          const evidence = {
+            sessions:Number(account.session_count), courses:Number(account.course_count), timetableEntries:Number(account.timetable_count),
+            progressRecords:Number(account.progress_count), pushSubscriptions:Number(account.push_count),
+          };
+          const noUsageEvidence = Object.values(evidence).every((count) => count === 0);
+          const needsReview = account.account_role !== 'privileged' && account.account_status === 'active' && Number(account.inactive_days) >= 7 && noUsageEvidence;
+          return { id:Number(account.id), username:account.username, privateLabel:account.private_label ?? '', role:account.account_role, status:account.account_status,
+            createdAt:iso(account.created_at), lastSeenAt:account.last_seen_at == null ? null : iso(account.last_seen_at), ageDays:Number(account.age_days), inactiveDays:Number(account.inactive_days), evidence, needsReview,
+            indicators:needsReview ? ['not-seen-for-7-days','no-current-usage-evidence'] : [] };
+        });
+        sendJson(response, 200, { requests:requestMonitor?.snapshot() ?? null, accountReview, policy:{ inactivityReviewDays:7, automaticDeletion:false } });
+        return true;
+      }
+      if (url.pathname === '/api/privileged/accounts' && request.method === 'GET') {
+        if (user.role !== 'privileged') throw new HttpError(403, 'Privileged access required.');
+        const accounts = await database.execute('SELECT id, username, admin_notes AS private_label FROM users ORDER BY id');
+        sendJson(response, 200, { accounts: accounts.map((account) => ({ id:Number(account.id), username:account.username, privateLabel:account.private_label ?? '' })) });
+        return true;
+      }
+      const privilegedLabelMatch = url.pathname.match(/^\/api\/privileged\/accounts\/(\d+)\/label$/);
+      if (privilegedLabelMatch && request.method === 'PATCH') {
+        if (user.role !== 'privileged') throw new HttpError(403, 'Privileged access required.');
+        const targetUserId = Number(privilegedLabelMatch[1]);
+        if (!Number.isSafeInteger(targetUserId) || targetUserId < 1) throw new HttpError(400, 'Invalid account id.');
+        const body = await readJson(request);
+        if (typeof body.privateLabel !== 'string') throw new HttpError(400, 'Private label must be text.');
+        const privateLabel = body.privateLabel.normalize('NFKC').trim().replace(/\s+/gu, ' ');
+        if (privateLabel.length > 100) throw new HttpError(400, 'Private label must be 100 characters or fewer.');
+        const result = await database.execute('UPDATE users SET admin_notes=?, account_updated_at=CURRENT_TIMESTAMP(3) WHERE id=?', [privateLabel || null, targetUserId]);
+        if (Number(result.affectedRows) !== 1) throw new HttpError(404, 'Account not found.');
+        await database.execute('INSERT INTO developer_audit_log(action,target_user_id,details) VALUES(?,?,?)', ['privileged_private_label', targetUserId, JSON.stringify({ actorUserId:user.id, hasLabel:Boolean(privateLabel) })]);
+        sendJson(response, 200, { updated:true, id:targetUserId, privateLabel });
+        return true;
+      }
+      if (url.pathname === '/api/auth/password' && request.method === 'POST') {
+        const payload = await readJson(request);
+        let password;
+        try { password = validatePassword(payload.password); if (password.length < security.minimumPasswordLength) throw new Error(); }
+        catch { throw new HttpError(400, 'Invalid new password.'); }
+        const saved = await hashPassword(password);
+        const replacement = createSessionToken();
+        await database.transaction(async (transaction) => {
+          await transaction.execute('UPDATE users SET password_salt=?, password_hash=?, password_parameters=?, must_change_password=FALSE, account_updated_at=CURRENT_TIMESTAMP(3) WHERE id=?', [saved.salt, saved.hash, JSON.stringify(saved.parameters), user.id]);
+          await transaction.execute('DELETE FROM sessions WHERE user_id=?', [user.id]);
+          await transaction.execute('INSERT INTO sessions(token_hash,user_id,last_seen_at,expires_at) VALUES(?,?,CURRENT_TIMESTAMP(3),DATE_ADD(CURRENT_TIMESTAMP(3),INTERVAL ? SECOND))', [replacement.tokenHash,user.id,sessionSeconds]);
+        });
+        sendJson(response,200,{changed:true},{'Set-Cookie':sessionCookie(replacement.token,sessionSeconds,{secure:security.secureCookies})}); return true;
+      }
+      if (user.mustChangePassword) throw new HttpError(403, 'Password change is required.');
+      if (url.pathname.startsWith('/api/push/') && request.method !== 'GET') limited('push-user', user.id, limits?.push);
       if (url.pathname === '/api/debug/report' && request.method === 'GET') {
         const [sessions, subscriptions, integrity] = await Promise.all([
           database.execute('SELECT COUNT(*) AS count FROM sessions WHERE user_id=? AND expires_at>CURRENT_TIMESTAMP(3)', [user.id]),
@@ -448,7 +541,10 @@ export function createApiHandler({ database, pushService = null, log = () => {},
         sendJson(response, 503, url.pathname === '/api/auth/recovery/status' ? { available: false } : { error: '密碼復原資料目前無法使用' });
         return true;
       }
-      if (error instanceof HttpError || Number.isInteger(error?.status)) sendJson(response, error.status, { error: error.message, ...(error.details ?? {}) });
+      if (error instanceof HttpError || Number.isInteger(error?.status)) {
+        if (error.status === 401 || error.status === 403) log('warning', 'unauthorized_api', 'Unauthorized API request rejected.');
+        sendJson(response, error.status, { error: error.message, ...(error.details ?? {}) }, error.headers ?? {});
+      }
       else if (error instanceof DatabaseUnavailableError) sendJson(response, 503, { error: '中央資料目前無法使用' });
       else {
         log('error', 'api_error', 'API request failed.');

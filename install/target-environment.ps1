@@ -45,7 +45,7 @@ function Invoke-TargetProcess([string]$Stage,[string]$FilePath,[string[]]$Argume
 
 function Get-NextAction([string]$Stage,[string]$Message) {
   if($Message-match 'npm|dependency|npm-cli'){return '確認 Node.js LTS 包含 npm，並確認可連線 npm registry；若 node_modules 已損壞，使用 -ForceDependencies 重跑。'}
-  if($Message-match 'MySQL|database|wdwelt_app|root'){return "在 Services 確認 $MySqlServiceName 正在執行，並確認 root 密碼仍是目標環境設定值。"}
+  if($Message-match 'MySQL|database|wdwelt_app|root'){return "在 Services 確認 $MySqlServiceName 正在執行，並驗證受保護的 administrative database 設定與 runtime 帳號憑證。"}
   if($Message-match '8080|Port|PID|process'){return '以系統管理員 PowerShell 執行 -Diagnose，查看目前 8080 PID；若是受保護的系統程序，必須先由 Windows 管理員解除其服務。'}
   if($Message-match 'network|網路|gateway|192\.168\.0\.18'){return '確認有線網卡已設定 192.168.0.18/22、gateway 192.168.1.254，且網路設定檔為 Private 或 Domain。'}
   if($Message-match 'denied|拒絕|policy|AppLocker|WDAC|administrator|權限'){return '確認已允許 UAC，並請裝置管理員檢查 AppLocker、WDAC 或執行原則；專案不能覆寫 Windows 裝置政策。'}
@@ -102,7 +102,7 @@ function Show-Diagnostics {
 if($PlanOnly){
   $deployment=Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repository 'config\deployment.json')|ConvertFrom-Json
   Write-Host "Target setup/update: http://$($deployment.hostAddress):8080/; MySQL service: $MySqlServiceName"
-  Write-Host 'Actions: reuse or install locked dependencies, prepare fixed MySQL accounts, build/package, transactional install/update, install startup/watchdog tasks, reclaim TCP 8080, verify host, set master recovery password.'
+  Write-Host 'Actions: reuse or install locked dependencies, verify administrative MySQL credentials, prepare a separate runtime account, build/package, transactional install/update, install startup/watchdog tasks, reclaim TCP 8080, verify host, set master recovery password.'
   Write-Host 'Failure output: runtime\logs\LAST-ERROR.txt contains stage, cause, next action and log tail.'
   Write-Host 'PlanOnly: no files, database, services, tasks or firewall were changed.'
   $global:LASTEXITCODE=0
@@ -111,6 +111,12 @@ if($PlanOnly){
 if($Diagnose){
   try{Show-Diagnostics;$global:LASTEXITCODE=0}
   catch{$script:stage='執行快速診斷';Write-FailureSummary $_;$global:LASTEXITCODE=1}
+  return
+}
+
+if(-not $env:WDWELT_RECOVERY_PASSWORD -or $env:WDWELT_RECOVERY_PASSWORD.Length -lt 12){
+  Write-Host '需要預先設定至少 12 字元的 WDWELT_RECOVERY_PASSWORD；未開始安裝。' -ForegroundColor Red
+  $global:LASTEXITCODE=1
   return
 }
 
@@ -140,11 +146,11 @@ try {
     $lockHash|Set-Content -LiteralPath $stampPath -Encoding ASCII
   }
 
-  Invoke-TargetProcess '準備固定 MySQL database 與帳號' $node @((Join-Path $repository 'db\operations\target-environment.mjs'))
+  Invoke-TargetProcess '驗證 MySQL 管理憑證並準備獨立 runtime 帳號' $node @((Join-Path $repository 'db\operations\target-environment.mjs'))
   $bootstrapArguments=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'bootstrap.ps1'),'-ExistingAccounts','-NonInteractive','-DependenciesReady','-MySqlServiceName',$MySqlServiceName)
   if($FullValidation){$bootstrapArguments+='-FullValidation'}
   Invoke-TargetProcess '建置並安裝或更新 WDWELT' 'powershell.exe' $bootstrapArguments
-  Invoke-TargetProcess '設定固定主復原密碼' 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'target-recovery.ps1'))
+  Invoke-TargetProcess '設定主復原密碼' 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'target-recovery.ps1'))
   Write-TargetLine "`nTARGET ENVIRONMENT READY: http://192.168.0.18:8080/" Green
   Write-TargetLine "Log: $logPath"
   $global:LASTEXITCODE=0

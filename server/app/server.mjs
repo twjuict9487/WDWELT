@@ -10,12 +10,14 @@ import { createApiHandler } from './api.mjs';
 import { DatabaseManager, UnavailableDatabaseManager } from './db.mjs';
 import { loadDatabaseConfig } from '../../db/core/config.mjs';
 import { toTaipeiIsoString } from '../../db/core/time.mjs';
-import { applySecurityHeaders, createSecurityPolicy } from './security.mjs';
+import { applySecurityHeaders, createSecurityPolicy, trustworthyClientKey } from './security.mjs';
 import { createPushService, loadPushConfig } from './push.mjs';
+import { createDeveloperAdminHandler, loadDeveloperCredentials } from './developer-admin.mjs';
+import { createRequestMonitor } from './request-monitor.mjs';
 
 const hostDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = dirname(dirname(hostDir));
-const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql', '003_recovery_config.sql', '004_taipei_timestamps.sql', '005_course_lifecycle.sql', '006_persistent_sessions.sql', '007_web_push.sql'].map((id) => ({
+const requiredMigrations = ['001_initial.sql', '002_password_recovery.sql', '003_recovery_config.sql', '004_taipei_timestamps.sql', '005_course_lifecycle.sql', '006_persistent_sessions.sql', '007_web_push.sql', '008_developer_admin.sql', '009_session_30_day_cap.sql', '010_last_seen.sql'].map((id) => ({
   id,
   checksum: createHash('sha256').update(readFileSync(resolve(projectRoot, 'db', 'migrations', id), 'utf8').replace(/^\uFEFF/, '')).digest('hex'),
 }));
@@ -39,7 +41,7 @@ const root = rootArgument
   : configuredPath(config.currentPath);
 assertWithinInstall(root, 'currentPath');
 const port = Number(config.port);
-if (port !== 8080) throw new Error('Production port 必須固定為 8080');
+if (port !== 8080 && process.env.WDWELT_TEST_PORT !== '1') throw new Error('Production port 必須固定為 8080');
 for (const key of ['logRetentionDays', 'logMaxBytes']) {
   if (!Number.isFinite(Number(config[key])) || Number(config[key]) <= 0) throw new Error(`${key} 必須大於 0`);
 }
@@ -53,8 +55,13 @@ const startedAt = Date.now();
 let database;
 try {
   if (!config.databaseConfigPath) throw new Error('databaseConfigPath missing');
-  database = new DatabaseManager(loadDatabaseConfig(configuredPath(config.databaseConfigPath)), log);
-} catch {
+  const runtimeDatabaseConfig = loadDatabaseConfig(configuredPath(config.databaseConfigPath));
+  if (runtimeDatabaseConfig.database === 'g2' && runtimeDatabaseConfig.user !== 'wdwelt_app') {
+    throw new Error('Production host must use the wdwelt_app runtime MySQL account.');
+  }
+  database = new DatabaseManager(runtimeDatabaseConfig, log);
+} catch (error) {
+  log('error', 'database_config_invalid', error.message);
   database = new UnavailableDatabaseManager({}, log);
 }
 database.start();
@@ -62,7 +69,8 @@ let pushService = null;
 try { pushService = createPushService({ database, config: loadPushConfig(config.pushConfigPath ? configuredPath(config.pushConfigPath) : null), log }); }
 catch (error) { log('error', 'push_config_invalid', error.message); }
 pushService?.start();
-const apiHandler = createApiHandler({ database, pushService, log, security });
+const requestMonitor = createRequestMonitor();
+const apiHandler = createApiHandler({ database, pushService, log, security, requestMonitor });
 const currentMigration = () => database.currentMigration();
 const checkApplicationDatabase = async () => {
   if (!await database.checkReady()) return false;
@@ -74,9 +82,31 @@ const checkApplicationDatabase = async () => {
 const staticHandler = createRequestHandler({ root, startedAt, checkDatabase: checkApplicationDatabase, currentMigration, databaseStatus: () => database.status });
 const server = createServer(async (request, response) => {
   applySecurityHeaders(response, security);
+  requestMonitor.observe(request, response, trustworthyClientKey(request, security));
   if (await apiHandler(request, response)) return;
   await staticHandler(request, response);
 });
+server.requestTimeout = Number(config.requestTimeoutMs ?? 15_000);
+server.headersTimeout = Number(config.headersTimeoutMs ?? 10_000);
+server.keepAliveTimeout = Number(config.keepAliveTimeoutMs ?? 5_000);
+server.maxRequestsPerSocket = Number(config.maxRequestsPerSocket ?? 200);
+let developerServer = null;
+if (config.developerAdminConfigPath && existsSync(configuredPath(config.developerAdminConfigPath))) {
+  const credentials = loadDeveloperCredentials(configuredPath(config.developerAdminConfigPath));
+  const developerPort = Number(config.developerAdminPort ?? 18081);
+  if (!Number.isInteger(developerPort) || developerPort < 1024 || developerPort > 65535 || developerPort === port) throw new Error('Invalid developerAdminPort.');
+  developerServer = createServer(createDeveloperAdminHandler({ database, credentials, log }));
+  developerServer.on('error', (error) => {
+    log('error', 'developer_admin_crash', 'Developer administration listener failed.');
+    console.error(`Developer administration failed: ${error.message}`);
+    server.close(); pushService?.stop(); void database.close().finally(() => process.exit(1));
+  });
+  developerServer.requestTimeout = 10_000;
+  developerServer.headersTimeout = 8_000;
+  developerServer.keepAliveTimeout = 3_000;
+  developerServer.maxRequestsPerSocket = 100;
+  developerServer.listen(developerPort, '127.0.0.1', () => log('info', 'developer_admin_start', `Developer administration listening on loopback port ${developerPort}.`));
+}
 const pidPath = resolve(runPath, 'host.pid.json');
 const shutdownRequestPath = resolve(runPath, 'shutdown.request.json');
 const controlToken = randomUUID();
@@ -96,7 +126,9 @@ server.on('error', (error) => {
     : `Host 啟動失敗：${error.message}`;
   log('error', error.code === 'EADDRINUSE' ? 'duplicate_attempt' : 'crash', message);
   console.error(message);
-  process.exitCode = 1;
+  developerServer?.close();
+  pushService?.stop();
+  void database.close().finally(() => process.exit(1));
 });
 server.listen(port, config.bindAddress ?? '0.0.0.0', () => {
   writeFileSync(pidPath, `${JSON.stringify({ pid: process.pid, startedAt: toTaipeiIsoString(new Date(startedAt)), root, configPath, version: release.version, build: release.build, controlToken }, null, 2)}\n`);
@@ -110,11 +142,18 @@ const shutdown = (signal) => {
   closing = true;
   log('info', 'stop', `Graceful stop requested (${signal})`);
   server.close(async () => {
+    developerServer?.close();
     pushService?.stop();
     try { await database.close(); } catch { /* process is stopping */ }
     try { unlinkSync(pidPath); } catch { /* stale PID is handled by manager */ }
     process.exit(0);
   });
+  server.closeIdleConnections?.();
+  developerServer?.closeIdleConnections?.();
+  setTimeout(() => {
+    server.closeAllConnections?.();
+    developerServer?.closeAllConnections?.();
+  }, 1_000).unref();
   setTimeout(() => process.exit(1), 10_000).unref();
 };
 const controlTimer = setInterval(() => {

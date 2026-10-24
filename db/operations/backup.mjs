@@ -13,6 +13,7 @@ const migrationTableRequirements = [
   { migration: '003_recovery_config.sql', table: 'recovery_config' },
   { migration: '007_web_push.sql', table: 'push_subscriptions' },
   { migration: '007_web_push.sql', table: 'push_deliveries' },
+  { migration: '008_developer_admin.sql', table: 'developer_audit_log' },
 ];
 
 const removeIfPresent = (path) => { try { unlinkSync(path); } catch { /* best effort */ } };

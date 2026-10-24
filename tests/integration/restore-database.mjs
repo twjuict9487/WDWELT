@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,9 @@ import { hashPassword } from '../../db/core/password.mjs';
 import { restoreDatabase } from '../../db/operations/restore.mjs';
 
 const configIndex = process.argv.indexOf('--config');
+const backupIndex = process.argv.indexOf('--backup');
 const adminConfigPath = (configIndex >= 0 ? process.argv[configIndex + 1] : process.argv[2]) ?? process.env.WDWELT_DB_ADMIN_CONFIG;
+const suppliedBackupPath = backupIndex >= 0 ? resolve(process.argv[backupIndex + 1]) : null;
 if (!adminConfigPath) throw new Error('Restore integration test requires an administrative config path');
 const admin = loadDatabaseConfig(resolve(adminConfigPath));
 const database = `wdwelt_test_restore_${Date.now()}_${randomBytes(3).toString('hex')}`;
@@ -27,8 +29,9 @@ try {
   finally { await adminConnection.end(); }
   writeFileSync(configPath, `${JSON.stringify({ ...admin, database, configPath: undefined }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   protectLocalFile(configPath);
-  const master = await hashPassword(randomBytes(24).toString('hex'));
-  writeFileSync(backupPath, `-- MySQL dump isolated restore fixture
+  const master = suppliedBackupPath ? null : await hashPassword(randomBytes(24).toString('hex'));
+  if (suppliedBackupPath) copyFileSync(suppliedBackupPath, backupPath);
+  else writeFileSync(backupPath, `-- MySQL dump isolated restore fixture
 -- Current Database: \`${database}\`
 USE \`${database}\`;
 CREATE TABLE \`users\` (
@@ -57,16 +60,31 @@ CREATE TABLE \`users\` (id INT NOT NULL);
   const result = await restoreDatabase({ configPath, backupPath, migrationsPath });
   const verification = await mysql.createConnection(databaseConnectionOptions({ ...admin, database }));
   try {
-    const [[marker], [migrations], [sessions], [resetTokens]] = await Promise.all([
-      verification.query('SELECT value FROM restore_marker'),
+    const [[migrations], [sessions], [resetTokens]] = await Promise.all([
       verification.query('SELECT COUNT(*) AS count FROM schema_migrations'),
       verification.query('SELECT COUNT(*) AS count FROM sessions'),
       verification.query('SELECT COUNT(*) AS count FROM password_reset_tokens'),
     ]);
-    if (!result.restored || marker[0]?.value !== 42 || Number(migrations[0].count) !== 4 || Number(sessions[0].count) !== 0 || Number(resetTokens[0].count) !== 0) throw new Error('Isolated restore verification failed');
-    const [recovery] = await verification.query("SELECT password_hash, salt, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s.%f') AS updated_at FROM recovery_config");
-    if (!recovery[0]?.password_hash.equals(master.hash) || !recovery[0]?.salt.equals(master.salt)) throw new Error('Recovery configuration was not preserved by restore');
-    if (recovery[0]?.updated_at !== '2026-10-02 07:00:00.000000') throw new Error(`Recovery timestamp was not migrated to Asia/Taipei: ${recovery[0]?.updated_at}`);
+    if (!result.restored || Number(sessions[0].count) !== 0 || Number(resetTokens[0].count) !== 0) throw new Error('Isolated restore verification failed');
+    if (suppliedBackupPath) {
+      const [[users], [courses], [timetable], [progress], [archived], [columns]] = await Promise.all([
+        verification.query('SELECT COUNT(*) AS count FROM users'),
+        verification.query('SELECT COUNT(*) AS count FROM courses'),
+        verification.query('SELECT COUNT(*) AS count FROM timetable_entries'),
+        verification.query('SELECT COUNT(*) AS count FROM course_progress'),
+        verification.query('SELECT COUNT(*) AS count FROM courses WHERE archived_at IS NOT NULL'),
+        verification.query("SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name IN ('account_role','account_status','must_change_password')"),
+      ]);
+      const actual = [migrations, users, courses, timetable, progress, archived, columns].map((rows) => Number(rows[0].count));
+      const expected = [9, 9, 103, 132, 27, 18, 3];
+      if (actual.some((value, index) => value !== expected[index])) throw new Error(`Current baseline verification failed: ${JSON.stringify({ actual, expected })}`);
+    } else {
+      const [marker] = await verification.query('SELECT value FROM restore_marker');
+      if (marker[0]?.value !== 42 || Number(migrations[0].count) !== 10) throw new Error('Fixture restore verification failed');
+      const [recovery] = await verification.query("SELECT password_hash, salt, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s.%f') AS updated_at FROM recovery_config");
+      if (!recovery[0]?.password_hash.equals(master.hash) || !recovery[0]?.salt.equals(master.salt)) throw new Error('Recovery configuration was not preserved by restore');
+      if (recovery[0]?.updated_at !== '2026-10-02 07:00:00.000000') throw new Error(`Recovery timestamp was not migrated to Asia/Taipei: ${recovery[0]?.updated_at}`);
+    }
     console.log(`Restore integration passed in ${database}`);
   } finally { await verification.end(); }
 } finally {

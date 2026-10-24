@@ -18,7 +18,7 @@ Removing a timetable slot archives its course after the last use. Re-adding the 
 
 ## Persistent sessions
 
-Sessions last 180 days and renew to 180 days when an authenticated request arrives with 30 days or less remaining. Logout revokes only that device. Password reset revokes all devices. Administrative revocation requires an explicit scope and confirmation:
+Sessions use sliding 30-day expiration. Regular authenticated use renews a session to at most 30 days from that request. Logout revokes only that device. Password reset revokes all devices. Administrative revocation requires an explicit scope and confirmation:
 
 ```powershell
 npm run sessions:revoke -- --config config/local/database.admin.json --username TeacherA --confirm REVOKE-SESSIONS

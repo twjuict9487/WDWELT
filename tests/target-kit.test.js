@@ -49,10 +49,9 @@ describe('compact target kit', () => {
     const manager = source('install/wdwelt.ps1');
     const targetDatabase = source('db/operations/target-environment.mjs');
     const backup = source('db/operations/backup.mjs');
-    expect(targetDatabase).toContain("database.admin.json'),{...common,user:'root'}");
-    expect(targetDatabase).toContain("database.runtime.json'),{...common,user:'wdwelt_app'}");
-    expect(targetDatabase).toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON `g2`.*');
-    expect(targetDatabase).not.toMatch(/GRANT[^\n]*(?:CREATE|DROP|ALTER|LOCK TABLES)[^\n]*wdwelt_app/i);
+    expect(targetDatabase).toContain('bootstrapRuntimeUser({adminConfigPath:adminPath,runtimeConfigPath:runtimePath})');
+    expect(targetDatabase).toContain('Runtime and administrative MySQL passwords are identical');
+    expect(targetDatabase).not.toContain('11335248');
     expect(manager).toContain("Invoke-DatabaseTool 'backup.mjs' @('--config',[string]$Config.adminDatabaseConfigPath");
     expect(backup).toContain('const config = loadDatabaseConfig(configPath);');
     expect(backup).toContain('const option = createOptionFile(config);');

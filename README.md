@@ -125,7 +125,7 @@ echo $LASTEXITCODE
 - 每門課的進度、備註與最後更新時間
 - 儲存後 10 秒復原
 - 多帳號資料隔離
-- 180 天持久登入與多裝置 Session
+- 滑動式 30 天持久登入與多裝置 Session
 - 忘記密碼與 Master Recovery Key
 - 移除課表時段不會刪除歷史進度
 - iPhone 主畫面 Web App、Android 與桌面 Web Push
@@ -281,7 +281,7 @@ npm.cmd run db:integrity -- `
 
 ## Session 與帳號安全
 
-- Session 預設有效 180 天，剩餘 30 天內正常使用時續期
+- Session 最長為「最後正常使用起 30 天」；正常使用會安全續期，但不會簽發超過 30 天的 Cookie
 - Token 只放在 `HttpOnly` Cookie，不使用 `localStorage`
 - HTTPS 使用 `Secure; HttpOnly; SameSite=Strict`
 - Logout 立即撤銷目前裝置
@@ -297,6 +297,29 @@ npm.cmd run sessions:revoke -- `
   --username TeacherA `
   --confirm REVOKE-SESSIONS
 ```
+
+### 本機 Developer Administration
+
+> [!IMPORTANT]
+> 管理介面不是 8080 的隱藏頁面。它是另一個只監聽 `127.0.0.1:18081` 的服務；LAN 與 Tailscale Funnel 都無法路由到它。
+
+建立 Git 忽略且受 ACL 保護的獨立 developer credential。密碼至少 12 字元，透過 stdin 傳入，不會建立一般 WDWELT 帳號：
+
+```powershell
+$credential = Get-Credential -UserName developer -Message 'WDWELT Developer（密碼至少 12 字元）'
+$pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($credential.Password)
+try {
+  @{ username = $credential.UserName; password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) } |
+    ConvertTo-Json -Compress |
+    npm.cmd run developer:setup
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+}
+```
+
+完成 Migration 並重啟 Host 後，只能在 Host 本機開啟 `http://127.0.0.1:18081/`。
+
+可搜尋帳號、管理身分標籤／備註、停用或啟用帳號、設定臨時密碼。重設密碼會撤銷該帳號全部 Session，使用者下次登入必須立刻換密碼。所有變更寫入 `developer_audit_log`，不保存或顯示明文密碼。
 
 ## 驗證
 

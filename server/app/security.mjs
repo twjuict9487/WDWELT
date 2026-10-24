@@ -25,23 +25,70 @@ export function createSecurityPolicy(config = {}) {
     allowMasterRecovery: funnel ? config.allowMasterRecovery === true : config.allowMasterRecovery !== false,
     minimumPasswordLength: funnel ? 12 : 3,
     minimumRecoveryKeyLength: funnel ? 20 : 3,
-    rateLimit: funnel ? {
+    rateLimit: {
       windowMs: 15 * 60_000,
-      loginAttempts: 10,
-      recoveryAttempts: 5,
-      globalLoginAttempts: 100,
-      globalRecoveryAttempts: 20,
-      maximumEntries: 2048,
-    } : null,
+      loginAttempts: 5,
+      recoveryAttempts: 3,
+      globalLoginAttempts: funnel ? 300 : 100,
+      globalRecoveryAttempts: funnel ? 100 : 20,
+      maximumEntries: 4096,
+    },
+    limits: {
+      general: { limit: Number(config.generalRequestsPerMinute ?? 120), windowMs: 60_000 },
+      registration: { limit: Number(config.registrationAttemptsPerHour ?? 3), windowMs: 3_600_000 },
+      recovery: { limit: Number(config.recoveryAttemptsPerHour ?? 3), windowMs: 3_600_000 },
+      push: { limit: Number(config.pushRequestsPerMinute ?? 10), windowMs: 60_000 },
+      maximumEntries: 4096,
+    },
   };
 }
 
+export function createFixedWindowLimiter({ maximumEntries = 4096 } = {}) {
+  const entries = new Map();
+  return {
+    consume(scope, key, { limit, windowMs }, now = Date.now()) {
+      const id = `${scope}:${String(key).normalize('NFKC').trim().toLocaleLowerCase('en-US')}`;
+      let entry = entries.get(id);
+      if (!entry || entry.resetAt <= now) entry = { count: 0, resetAt: now + windowMs };
+      if (!entries.has(id) && entries.size >= maximumEntries) {
+        for (const [storedId, value] of entries) if (value.resetAt <= now) entries.delete(storedId);
+        if (entries.size >= maximumEntries) entries.delete(entries.keys().next().value);
+      }
+      entry.count += 1; entries.set(id, entry);
+      return { allowed: entry.count <= limit, retryAfter: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)) };
+    },
+  };
+}
+
+export function trustworthyClientKey(request, policy) {
+  const remote = request.socket?.remoteAddress ?? 'unknown';
+  if (policy.exposureMode === 'tailscale-funnel') {
+    const session = typeof request.headers?.cookie === 'string' ? request.headers.cookie.match(/(?:^|;\s*)wdwelt_session=([A-Za-z0-9_-]{40,100})/)?.[1] : null;
+    return session ? `session:${session}` : 'funnel-anonymous';
+  }
+  return `socket:${remote}`;
+}
+
 export function assertRequestOrigin(request, policy) {
-  if (!policy.requireSameOrigin || !UNSAFE_METHODS.has(request.method ?? '')) return;
-  if (request.headers.origin !== policy.publicOrigin) {
+  if (!UNSAFE_METHODS.has(request.method ?? '')) return;
+  if (request.headers['sec-fetch-site'] === 'cross-site') {
     const error = new Error('Request origin 不受信任');
     error.status = 403;
     throw error;
+  }
+  if (policy.requireSameOrigin && request.headers.origin !== policy.publicOrigin) {
+    const error = new Error('Request origin 不受信任');
+    error.status = 403;
+    throw error;
+  }
+  if (!policy.requireSameOrigin && request.headers.origin) {
+    let originHost = '';
+    try { originHost = new URL(request.headers.origin).host; } catch { /* rejected below */ }
+    if (!originHost || originHost !== request.headers.host) {
+      const error = new Error('Request origin 不受信任');
+      error.status = 403;
+      throw error;
+    }
   }
 }
 
@@ -50,6 +97,7 @@ export function applySecurityHeaders(response, policy) {
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  response.setHeader('Content-Security-Policy', "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
   if (policy.secureCookies) response.setHeader('Strict-Transport-Security', 'max-age=31536000');
 }
 
@@ -68,8 +116,18 @@ export function createAuthRateLimiter(options) {
     attempts.set(id, entry);
     return entry.count <= limit;
   };
+  const activeCount = (kind, key, now = Date.now()) => {
+    const id = `${kind}:${String(key).normalize('NFKC').trim().toLocaleLowerCase('en-US')}`;
+    const entry = attempts.get(id);
+    if (!entry || entry.resetAt <= now) { attempts.delete(id); return 0; }
+    return entry.count;
+  };
+  const clear = (kind, key) => attempts.delete(`${kind}:${String(key).normalize('NFKC').trim().toLocaleLowerCase('en-US')}`);
   return {
     allowLogin: (key, now) => consume('login-global', '*', options.globalLoginAttempts, now) && consume('login', key, options.loginAttempts, now),
     allowRecovery: (key, now) => consume('recovery-global', '*', options.globalRecoveryAttempts, now) && consume('recovery', key, options.recoveryAttempts, now),
+    isLoginAllowed: (key, now) => activeCount('login-global', '*', now) < options.globalLoginAttempts && activeCount('login', key, now) < options.loginAttempts,
+    recordLoginFailure: (key, now) => consume('login-global', '*', options.globalLoginAttempts, now) && consume('login', key, options.loginAttempts, now),
+    clearLoginFailures: (key) => clear('login', key),
   };
 }

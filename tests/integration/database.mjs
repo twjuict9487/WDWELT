@@ -119,7 +119,7 @@ try {
   const loginA = await api(base, '/api/auth/login', { method: 'POST', body: { username: 'TeacherA', password: '111' } });
   const cookieA = loginA.cookie;
   assert(loginA.response.status === 200 && cookieA?.includes('HttpOnly') && cookieA?.includes('SameSite=Strict') && !cookieA?.includes('Secure'), 'login set the LAN-compatible opaque session cookie');
-  assert(cookieA?.includes(`Max-Age=${SESSION_DURATION_SECONDS}`) && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) <= SESSION_DURATION_SECONDS * 1000 && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) > (SESSION_DURATION_SECONDS - 5) * 1000, 'login expiry and cookie last 180 days from creation');
+  assert(cookieA?.includes(`Max-Age=${SESSION_DURATION_SECONDS}`) && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) <= SESSION_DURATION_SECONDS * 1000 && Date.parse(loginA.value.expiresAt) - Date.parse(loginA.value.serverTime) > (SESSION_DURATION_SECONDS - 5) * 1000, 'login expiry and cookie are capped at 30 days from creation');
   assert((await api(base, '/api/auth/me')).response.status === 401, 'unauthenticated me returned 401');
   const meA = await api(base, '/api/auth/me', { cookie: cookieA });
   assert(meA.value.user.username === 'TeacherA' && meA.value.expiresAt === loginA.value.expiresAt, 'session cookie restored identity and does not churn expiry outside the renewal window');
@@ -130,7 +130,7 @@ try {
   assert(storedSession[0].expires_at.getTime() === Date.parse(loginA.value.expiresAt), 'read requests outside the renewal window did not change database session expiry');
   await database.execute('UPDATE sessions SET expires_at=DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 29 DAY) WHERE token_hash=?',[hashSessionToken(tokenA)]);
   const renewedA=await api(base,'/api/auth/me',{cookie:cookieA});
-  assert(renewedA.cookie?.includes(`Max-Age=${SESSION_DURATION_SECONDS}`) && Date.parse(renewedA.value.expiresAt)-Date.parse(renewedA.value.serverTime)>(SESSION_DURATION_SECONDS-5)*1000,'active session inside the 30-day window safely renewed to 180 days');
+  assert(renewedA.cookie?.includes(`Max-Age=${SESSION_DURATION_SECONDS}`) && Date.parse(renewedA.value.expiresAt)-Date.parse(renewedA.value.serverTime)>(SESSION_DURATION_SECONDS-5)*1000,'active session safely renewed to no more than 30 days');
   const credentialRows = await database.execute("SELECT COUNT(*) AS plaintextColumn FROM information_schema.columns WHERE table_schema = ? AND table_name = 'users' AND column_name = 'password'", [testDatabase]);
   assert(Number(credentialRows[0].plaintextColumn) === 0, 'plaintext password column no longer existed');
 
@@ -190,7 +190,7 @@ try {
     database.execute('SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?', [testDatabase]),
     database.execute('SELECT COUNT(*) AS count FROM schema_migrations'),
   ]);
-  assert(Number(tableCount[0].count) === 10 && Number(migrationCount[0].count) === 7, 'migrations created lifecycle, session and push tables with Taipei timestamps');
+  assert(Number(tableCount[0].count) === 11 && Number(migrationCount[0].count) === 10, 'migrations created lifecycle, session, push, developer audit and last-seen tracking with Taipei timestamps');
   console.log(`DB integration passed: ${checks.length} checks in ${testDatabase}`);
   for (const check of checks) console.log(`  PASS ${check}`);
 } finally {

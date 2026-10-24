@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-export const SESSION_DURATION_SECONDS = 180 * 24 * 60 * 60;
-export const SESSION_RENEWAL_WINDOW_SECONDS = 30 * 24 * 60 * 60;
+export const SESSION_DURATION_SECONDS = 30 * 24 * 60 * 60;
+// Sliding expiration: ordinary authenticated use renews once the session has
+// less than 29 days remaining. A cookie is never issued beyond 30 days.
+export const SESSION_RENEWAL_WINDOW_SECONDS = 29 * 24 * 60 * 60;
 
 export {
   derivePasswordHash,

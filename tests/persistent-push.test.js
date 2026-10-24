@@ -4,9 +4,9 @@ import { endpointHash, pushFailureDiagnostic } from '../server/app/push.mjs';
 import { readFileSync } from 'node:fs';
 
 describe('persistent login and push contracts', () => {
-  it('uses a 180-day rolling session with a 30-day renewal window', () => {
-    expect(SESSION_DURATION_SECONDS).toBe(180*24*60*60);
-    expect(SESSION_RENEWAL_WINDOW_SECONDS).toBe(30*24*60*60);
+  it('uses a rolling session capped at 30 days from regular use', () => {
+    expect(SESSION_DURATION_SECONDS).toBe(30*24*60*60);
+    expect(SESSION_RENEWAL_WINDOW_SECONDS).toBe(29*24*60*60);
   });
   it('hashes subscription endpoints and keeps credentials out of browser storage', () => {
     expect(endpointHash('https://push.example/device').length).toBe(32);

@@ -6,4 +6,5 @@ runtime/
 install/offline/
 *.tsbuildinfo
 *.local
+/wdwelt.sql
 .DS_Store

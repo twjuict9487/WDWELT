@@ -3,10 +3,12 @@ import type { AppState, CourseProgress, DraftEntry } from './types';
 export interface AuthUser {
   id: number;
   username: string;
+  role?: 'user' | 'privileged';
 }
 
 export interface AuthSession {
   user: AuthUser;
+  mustChangePassword?: boolean;
   expiresAt: string;
   serverTime: string;
 }
@@ -67,6 +69,10 @@ export async function resetPassword(password: string): Promise<void> {
   await request('/api/auth/recovery/reset', { method: 'POST', body: JSON.stringify({ password }) });
 }
 
+export async function changePassword(password: string): Promise<void> {
+  await request('/api/auth/password', { method: 'POST', body: JSON.stringify({ password }) });
+}
+
 export async function logout(): Promise<void> {
   await request('/api/auth/logout', { method: 'POST' });
 }
@@ -108,9 +114,29 @@ export async function clearProgress(): Promise<void> {
 }
 
 export interface PushConfig { configured: boolean; publicKey: string | null; defaultReminderMinutes: number }
+export interface PushDiagnostic { stage:string; httpStatus:number|null; errorCode:string|null; providerReason:string|null; message:string }
+export interface PushTestResult { sent:true; diagnostic:PushDiagnostic }
 export const loadPushConfig = (): Promise<PushConfig> => request('/api/push/config');
 export const savePushSubscription = (subscription: PushSubscriptionJSON, reminderMinutes: number): Promise<{enabled:boolean;reminderMinutes:number}> =>
   request('/api/push/subscription', { method:'PUT', body:JSON.stringify({ subscription, reminderMinutes }) });
 export const deletePushSubscription = (endpoint: string): Promise<void> => request('/api/push/subscription', { method:'DELETE', body:JSON.stringify({endpoint}) });
-export const sendTestPush = (endpoint: string): Promise<void> => request('/api/push/test', { method:'POST', body:JSON.stringify({endpoint}) });
+export const sendTestPush = (endpoint: string): Promise<PushTestResult> => request('/api/push/test', { method:'POST', body:JSON.stringify({endpoint}) });
 export const loadDebugReport = (): Promise<Record<string, unknown>> => request('/api/debug/report');
+
+export interface PrivilegedAccount { id:number; username:string; privateLabel:string }
+export interface PrivilegedMonitorReport {
+  requests:null|{
+    generatedAt:string;retentionMinutes:number;
+    currentMinute:{requests:number;errors:number;unauthorized:number;notFound:number;rateLimited:number;topRoutes:Array<{route:string;requests:number}>};
+    last5Minutes:{requests:number;errors:number;unauthorized:number;notFound:number;rateLimited:number;topRoutes:Array<{route:string;requests:number}>};
+    last60Minutes:{requests:number;errors:number;unauthorized:number;notFound:number;rateLimited:number;topRoutes:Array<{route:string;requests:number}>};
+    suspiciousSources:Array<{source:string;windowMinutes:number;requests:number;errors:number;unauthorized:number;notFound:number;rateLimited:number;indicators:string[]}>;
+  };
+  accountReview:Array<{id:number;username:string;privateLabel:string;role:string;status:string;createdAt:string;lastSeenAt:string|null;ageDays:number;inactiveDays:number;needsReview:boolean;indicators:string[];evidence:{sessions:number;courses:number;timetableEntries:number;progressRecords:number;pushSubscriptions:number}}>;
+  policy:{inactivityReviewDays:number;automaticDeletion:false};
+}
+export const loadPrivilegedAccounts = (): Promise<PrivilegedAccount[]> =>
+  request<{accounts:PrivilegedAccount[]}>('/api/privileged/accounts').then((result)=>result.accounts);
+export const loadPrivilegedMonitor = (): Promise<PrivilegedMonitorReport> => request('/api/privileged/monitor');
+export const savePrivateAccountLabel = (id:number, privateLabel:string): Promise<{updated:true;id:number;privateLabel:string}> =>
+  request(`/api/privileged/accounts/${id}/label`, { method:'PATCH', body:JSON.stringify({privateLabel}) });

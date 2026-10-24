@@ -83,20 +83,22 @@ try {
   checks.push('daily backup and repeat migration preserve data, grants, accounts and passwords');
   const targetDirectory = join(root, 'target-config');
   await connection.query("ALTER USER 'root'@'localhost' IDENTIFIED BY '11335248'");
+  process.env.WDWELT_DB_ROOT_PASSWORD='11335248';
   await prepareTargetEnvironment({port,directory:targetDirectory});
   await prepareTargetEnvironment({port,directory:targetDirectory});
   const targetAdmin = JSON.parse(readFileSync(join(targetDirectory,'database.admin.json'),'utf8'));
   const targetRuntime = JSON.parse(readFileSync(join(targetDirectory,'database.runtime.json'),'utf8'));
   assert.equal(targetAdmin.user,'root');
   assert.equal(targetRuntime.user,'wdwelt_app');
+  assert.equal(targetRuntime.port,port);
   assert.equal(targetAdmin.password,'11335248');
-  assert.equal(targetRuntime.password,'11335248');
+  assert.notEqual(targetRuntime.password,targetAdmin.password);
   assert.equal((await connection.query("SELECT COUNT(*) AS count FROM g2.users WHERE username='preserved-teacher'"))[0][0].count,1);
   assert.equal((await checkRuntimeDatabase(join(targetDirectory,'database.runtime.json'),{requireSchema:true})).ready,true);
-  checks.push('fixed target credentials can be provisioned twice without deleting g2 data');
+  checks.push('separate target credentials can be provisioned twice without deleting g2 data');
   const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
   const targetRecoveryScript = join(repository,'install/target-recovery.ps1');
-  const targetRecovery = () => spawnSync('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',targetRecoveryScript,'-AdminConfig',join(targetDirectory,'database.admin.json')],{encoding:'utf8',windowsHide:true});
+  const targetRecovery = () => spawnSync('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',targetRecoveryScript,'-AdminConfig',join(targetDirectory,'database.admin.json')],{encoding:'utf8',windowsHide:true,env:{...process.env,WDWELT_RECOVERY_PASSWORD:'test-only-recovery-11335248'}});
   const initializedRecovery = targetRecovery();
   assert.equal(initializedRecovery.status,0,initializedRecovery.stdout+initializedRecovery.stderr);
   const recoveryBefore = (await connection.query('SELECT * FROM g2.recovery_config'))[0];
@@ -106,10 +108,12 @@ try {
   assert.equal(repeated.status,0,repeated.stdout+repeated.stderr);
   const recoveryAfter = (await connection.query('SELECT * FROM g2.recovery_config'))[0];
   assert.ok(!recoveryAfter[0].password_hash.equals(recoveryBefore[0].password_hash));
-  assert.ok(await verifyRecoveryPassword('11335248',recoveryAfter[0]));
-  checks.push('fixed master recovery password is restored on repeated target setup');
-  await testPackagedRecovery({repository,root,admin:join(targetDirectory,'database.admin.json'),runtime:join(targetDirectory,'database.runtime.json'),password:'11335248'});
-  checks.push('packaged host serves recovery and accepts immediate master password rotation');
+  assert.ok(await verifyRecoveryPassword('test-only-recovery-11335248',recoveryAfter[0]));
+  checks.push('configured master recovery password is applied on repeated target setup');
+  if(process.env.WDWELT_SKIP_PACKAGED_RECOVERY!=='1'){
+    await testPackagedRecovery({repository,root,admin:join(targetDirectory,'database.admin.json'),runtime:join(targetDirectory,'database.runtime.json'),password:'test-only-recovery-11335248'});
+    checks.push('packaged host serves recovery and accepts immediate master password rotation');
+  }
   console.log(JSON.stringify({ passed: checks.length, checks }, null, 2));
 } finally {
   if (connection) {

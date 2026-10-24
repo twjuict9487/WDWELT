@@ -109,8 +109,8 @@ function Assert-ProductionPackage([string]$PackageRoot){
   Assert-Contains $backup 'const option = createOptionFile(config);' 'Packaged backup option file'
   Assert-Contains $backup 'spawn(config.mysqlDumpPath, args' 'Packaged mysqldump invocation'
   $targetDatabase=Get-Content -Raw -LiteralPath (Join-Path $PackageRoot 'db\operations\target-environment.mjs')
-  Assert-Contains $targetDatabase "writeProtectedJson(resolve(directory,'database.admin.json'),{...common,user:'root'})" 'Administrative DB config'
-  Assert-Contains $targetDatabase "writeProtectedJson(resolve(directory,'database.runtime.json'),{...common,user:'wdwelt_app'})" 'Runtime DB config'
+  Assert-Contains $targetDatabase 'bootstrapRuntimeUser({adminConfigPath:adminPath,runtimeConfigPath:runtimePath})' 'Least-privilege DB bootstrap'
+  Assert-Contains $targetDatabase 'Runtime and administrative MySQL passwords are identical' 'Separate DB credentials'
   Assert-Manifest $PackageRoot
 }
 

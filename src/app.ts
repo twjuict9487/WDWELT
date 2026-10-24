@@ -2,6 +2,7 @@ import './styles.css';
 import {
   ApiError,
   clearProgress,
+  changePassword,
   currentUser as fetchCurrentUser,
   loadAccountState,
   login,
@@ -18,8 +19,13 @@ import {
   deletePushSubscription,
   sendTestPush,
   loadDebugReport,
+  loadPrivilegedAccounts,
+  loadPrivilegedMonitor,
+  savePrivateAccountLabel,
   type AuthUser,
   type AuthSession,
+  type PrivilegedAccount,
+  type PrivilegedMonitorReport,
 } from './api';
 import {
   normalizeProgressDraft,
@@ -62,7 +68,7 @@ import { nextTimetableInputIndex } from './timetable-navigation';
 import type { AppState, Course, CourseProgress, DraftEntry } from './types';
 import { weeklyCourses, weeklyEntryTimelineRole } from './weekly';
 
-type Screen = 'loading' | 'login' | 'register' | 'recovery' | 'reset-password' | 'home' | 'timetable' | 'progress' | 'settings';
+type Screen = 'loading' | 'login' | 'register' | 'recovery' | 'reset-password' | 'forced-password' | 'home' | 'timetable' | 'progress' | 'settings';
 type TimetableIntent = 'create' | 'edit';
 type ToastKind = 'success' | 'error';
 
@@ -139,6 +145,9 @@ let progressOriginalSnapshot: ProgressDraft | null = null;
 let debugNow: Date | null = null;
 let pushNotice = '';
 let debugReport = '';
+let privilegedAccounts: PrivilegedAccount[] | null = null;
+let privilegedMonitor: PrivilegedMonitorReport | null = null;
+let privilegedNotice = '';
 let timelineContextSignature = '';
 let expandedTimelineRole: TimelineRole | null = null;
 let undoRecord: UndoRecord | null = null;
@@ -381,12 +390,18 @@ function renderLogin(): void {
       loginUsername = session.user.username;
       try { rememberUsername(globalThis.localStorage, loginUsername); } catch { /* storage is optional */ }
       password.value = '';
-      await loadSignedInState(session);
+      if (session.mustChangePassword) { authenticatedUser = session.user; screen = 'forced-password'; render(); }
+      else await loadSignedInState(session);
     } catch (error) {
       showFormError(authErrorMessage(error));
       submit?.removeAttribute('disabled');
     }
   });
+}
+
+function renderForcedPassword(): void {
+  root.innerHTML = page('更換密碼', `<form id="forced-password-form" class="panel form-panel auth-panel"><h1>請先更換臨時密碼</h1><p>管理員重設後，必須設定自己的新密碼才能繼續。</p><label>新密碼<input name="password" type="password" minlength="12" maxlength="256" autocomplete="new-password" required></label><label>確認密碼<input name="confirmation" type="password" minlength="12" maxlength="256" autocomplete="new-password" required></label><p id="form-error" class="status error" role="alert" hidden></p><button class="button primary" type="submit">更換密碼</button></form>`);
+  document.querySelector<HTMLFormElement>('#forced-password-form')?.addEventListener('submit',async(event)=>{event.preventDefault();const form=event.currentTarget as HTMLFormElement;const password=form.elements.namedItem('password') as HTMLInputElement;const confirmation=form.elements.namedItem('confirmation') as HTMLInputElement;if(password.value!==confirmation.value){showFormError('兩次輸入的密碼不一致。');return;}try{await changePassword(password.value);await restoreSession();}catch(error){showFormError(authErrorMessage(error));}});
 }
 
 function renderRecovery(): void {
@@ -1212,6 +1227,7 @@ function renderSettings(): void {
       <p class="small-text">操作瀏覽器能力、PWA、Session、API、資料完整性與課表顯示。所有檢查預設唯讀；推播測試會真的傳送一則通知。</p>
       <div class="button-stack">
         ${button('run-self-test', '執行完整自動檢查', 'secondary')}
+        ${button('test-local-notification', '測試本機通知顯示', 'secondary')}
         ${button('refresh-service-worker', '更新 Service Worker', 'secondary')}
         ${button('copy-self-test', '複製檢查報告', 'quiet')}
         ${button('debug-open-home', '回首頁驗證模擬時間', 'quiet')}
@@ -1233,6 +1249,22 @@ function renderSettings(): void {
       <p>${authenticatedUser ? escapeHtml(authenticatedUser.username) : '無法確認'}</p>
       ${button('logout', '登出', 'secondary')}
     </section>
+    ${authenticatedUser?.role === 'privileged' ? `<section class="panel settings-group" aria-labelledby="privileged-title">
+      <h2 id="privileged-title">Private account names</h2>
+      <p class="small-text">Only visible here. This never changes another user's username or experience.</p>
+      ${button('load-privileged-accounts', privilegedAccounts ? 'Refresh accounts' : 'Load accounts', 'secondary')}
+      ${button('load-privileged-monitor', privilegedMonitor ? 'Refresh security monitor' : 'Open security monitor', 'secondary')}
+      <p class="status" role="status">${escapeHtml(privilegedNotice)}</p>
+      ${privilegedMonitor ? `<div class="card">
+        <strong>Requests</strong><br>
+        Current minute: ${privilegedMonitor.requests?.currentMinute.requests ?? 0} · Last 5 minutes: ${privilegedMonitor.requests?.last5Minutes.requests ?? 0} · Last 60 minutes: ${privilegedMonitor.requests?.last60Minutes.requests ?? 0}<br>
+        <span class="small-text">Rejected in 5 minutes: ${privilegedMonitor.requests?.last5Minutes.unauthorized ?? 0} unauthorized, ${privilegedMonitor.requests?.last5Minutes.notFound ?? 0} not found, ${privilegedMonitor.requests?.last5Minutes.rateLimited ?? 0} rate limited.</span><br>
+        <span class="small-text">Flagged request sources: ${privilegedMonitor.requests?.suspiciousSources.length ?? 0}. Source IDs are temporary hashes, not IP addresses.</span>
+      </div>
+      <div class="privileged-account-list">${privilegedMonitor.accountReview.map((account)=>`<div class="card"><strong>${account.needsReview ? 'Review: ' : ''}${escapeHtml(account.username)}</strong><br><span class="small-text">${escapeHtml(account.privateLabel || 'No private name')} · Last opened WDWELT: ${account.lastSeenAt ? escapeHtml(new Date(account.lastSeenAt).toLocaleString('zh-TW',{timeZone:'Asia/Taipei'})) : 'Never recorded'} · inactive ${account.inactiveDays} days${account.needsReview ? ' · no current timetable, course, progress, session, or push evidence' : ''}.</span></div>`).join('')}</div>
+      <p class="small-text">Detection only: no account is automatically disabled or deleted.</p>` : ''}
+      ${privilegedAccounts ? `<div class="privileged-account-list">${privilegedAccounts.map((account)=>`<div class="card"><strong>${escapeHtml(account.username)}</strong><br><span class="small-text">${escapeHtml(account.privateLabel || 'No private name')}</span><br><button type="button" class="secondary" data-private-label-id="${account.id}">Set private name</button></div>`).join('')}</div>` : ''}
+    </section>` : ''}
     <section class="panel danger-zone" aria-labelledby="danger-title">
       <h2 id="danger-title">危險操作</h2>
       <div class="button-stack">
@@ -1289,12 +1321,22 @@ function renderSettings(): void {
     catch(error){pushNotice=error instanceof Error?error.message:String(error);} render();
   });
   document.querySelector('#test-push')?.addEventListener('click', async () => {
-    try { const subscription=await currentPushSubscription(); if(!subscription) throw new Error('請先啟用這台裝置通知'); await sendTestPush(subscription.endpoint); pushNotice='測試通知已送出。'; }
+    try { const subscription=await currentPushSubscription(); if(!subscription) throw new Error('請先啟用這台裝置通知'); const result=await sendTestPush(subscription.endpoint); const diagnostic=result.diagnostic; pushNotice=`推播供應商已接受：HTTP ${diagnostic.httpStatus ?? '無回應'}；階段 ${diagnostic.stage}；${diagnostic.message}`; }
     catch(error){pushNotice=error instanceof Error?error.message:String(error);} render();
   });
   document.querySelector('#run-self-test')?.addEventListener('click', async () => {
     debugReport='正在檢查瀏覽器、PWA、Session、API、資料完整性與課表狀態…'; render();
     try { debugReport=JSON.stringify(await collectDeveloperReport(),null,2); } catch(error){debugReport=error instanceof Error?error.message:String(error);} render();
+  });
+  document.querySelector('#test-local-notification')?.addEventListener('click', async () => {
+    try {
+      if(!('Notification' in globalThis)) throw new Error('此瀏覽器不支援通知');
+      if(Notification.permission!=='granted') throw new Error(`通知權限不是 granted（目前：${Notification.permission}）`);
+      if(!('serviceWorker' in navigator)) throw new Error('此瀏覽器不支援 Service Worker');
+      const registration=await navigator.serviceWorker.ready;
+      await registration.showNotification('WDWELT 本機顯示測試',{body:'如果你看到這則通知，瀏覽器與 Windows 顯示層正常。',tag:'wdwelt-local-display-test',icon:'/icon-192.svg',badge:'/icon-192.svg'});
+      pushNotice='本機通知已交給瀏覽器；若沒有看到通知，請檢查 Windows 勿擾模式與瀏覽器通知設定。';
+    } catch(error){pushNotice=error instanceof Error?error.message:String(error);} render();
   });
   document.querySelector('#refresh-service-worker')?.addEventListener('click', async () => {
     try {
@@ -1334,6 +1376,20 @@ function renderSettings(): void {
     render();
   });
   document.querySelector('#logout')?.addEventListener('click', () => { void performLogout(); });
+  document.querySelector('#load-privileged-accounts')?.addEventListener('click', async()=>{
+    try { privilegedAccounts=await loadPrivilegedAccounts(); privilegedNotice=`Loaded ${privilegedAccounts.length} accounts.`; }
+    catch(error){privilegedNotice=authErrorMessage(error);} render();
+  });
+  document.querySelector('#load-privileged-monitor')?.addEventListener('click', async()=>{
+    try { privilegedMonitor=await loadPrivilegedMonitor(); privilegedNotice=`Security monitor updated. ${privilegedMonitor.accountReview.filter((account)=>account.needsReview).length} accounts need review.`; }
+    catch(error){privilegedNotice=authErrorMessage(error);} render();
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-private-label-id]').forEach((control)=>control.addEventListener('click',async()=>{
+    const id=Number(control.dataset.privateLabelId); const account=privilegedAccounts?.find((entry)=>entry.id===id); if(!account)return;
+    const privateLabel=globalThis.prompt(`Private name for ${account.username}`,account.privateLabel) ?? account.privateLabel;
+    try { await savePrivateAccountLabel(id,privateLabel); privilegedAccounts=await loadPrivilegedAccounts(); privilegedNotice='Private name saved.'; }
+    catch(error){privilegedNotice=authErrorMessage(error);} render();
+  }));
   document.querySelector('#copy-diagnostics')?.addEventListener('click', async () => {
     const status = document.querySelector<HTMLParagraphElement>('#diagnostics-copy-status');
     try {
@@ -1355,6 +1411,7 @@ function render(): void {
     case 'register': renderRegister(); break;
     case 'recovery':
     case 'reset-password': renderRecovery(); break;
+    case 'forced-password': renderForcedPassword(); break;
     case 'home': renderHome(); break;
     case 'timetable': renderTimetable(); break;
     case 'progress': renderProgress(); break;
@@ -1369,7 +1426,8 @@ async function restoreSession(): Promise<void> {
   render();
   try {
     const session = await fetchCurrentUser();
-    await loadSignedInState(session);
+    if (session.mustChangePassword) { authenticatedUser = session.user; screen = 'forced-password'; render(); }
+    else await loadSignedInState(session);
   } catch (error) {
     authenticatedUser = null;
     clearSessionTimer();

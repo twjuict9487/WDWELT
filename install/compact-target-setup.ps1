@@ -74,11 +74,14 @@ try{
     if($StartOnly){
       Write-Host "Host plan: use installed manager $installedTool to run start and status with $installedConfig."
     }else{
-      Write-Host 'Setup plan: fixed-account preparation, mandatory administrative pre-migration backup, migration, transactional install/update, tasks, firewall, TCP 8080 reclaim and health verification.'
+      Write-Host 'Setup plan: verify administrative credentials, prepare a separate runtime account, perform mandatory administrative pre-migration backup, migration, transactional install/update, tasks, firewall, TCP 8080 reclaim and health verification.'
       Write-Host 'Network plan: host=192.168.0.18; remote=192.168.0.0/22; protocol=TCP; port=8080; profiles=Private,Domain,Public.'
     }
     Write-Host 'PlanOnly: no files, database, services, tasks or firewall state were changed.'
     exit 0
+  }
+  if(-not $StartOnly -and (-not $env:WDWELT_RECOVERY_PASSWORD -or $env:WDWELT_RECOVERY_PASSWORD.Length -lt 12)){
+    throw '需要預先設定至少 12 字元的 WDWELT_RECOVERY_PASSWORD；未開始安裝。'
   }
   if(Restart-ElevatedIfNeeded){exit 0}
   [IO.Directory]::CreateDirectory($logRoot)|Out-Null
@@ -93,9 +96,9 @@ try{
   $node=(Get-Command node.exe -ErrorAction Stop).Source
   $admin=Join-Path $payload 'config\local\database.admin.json'
   $runtimeConfig=Join-Path $payload 'config\local\database.runtime.json'
-  Invoke-SetupProcess '準備固定 MySQL database 與帳號' $node @((Join-Path $payload 'db\operations\target-environment.mjs'))
+  Invoke-SetupProcess '驗證 MySQL 管理憑證並準備獨立 runtime 帳號' $node @((Join-Path $payload 'db\operations\target-environment.mjs'))
   Invoke-SetupProcess '安裝或更新 WDWELT' 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $payload 'tools\wdwelt.ps1'),'install','-PackagePath',$payload,'-NodePath',$node,'-DatabaseConfigPath',$runtimeConfig,'-AdminDatabaseConfigPath',$admin,'-MySqlServiceName',$MySqlServiceName,'-DeploymentSettingsPath',(Join-Path $payload 'tools\deployment.json'),'-CanonicalHost','192.168.0.18','-AllowedRemoteAddress','192.168.0.0/22','-AllowPublicProfile')
-  Invoke-SetupProcess '設定固定 Master Recovery Password' 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $payload 'tools\target-recovery.ps1'),'-AdminConfig',$admin)
+  Invoke-SetupProcess '設定 Master Recovery Password' 'powershell.exe' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $payload 'tools\target-recovery.ps1'),'-AdminConfig',$admin)
   Write-SetupLine "`nTARGET ENVIRONMENT READY: http://192.168.0.18:8080/" Green
   Write-SetupLine "Log: $logPath"
   exit 0

@@ -1,6 +1,7 @@
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createDatabaseConnection } from '../core/mysql-driver.mjs';
 import { databaseConnectionOptions, loadDatabaseConfig } from '../core/config.mjs';
@@ -8,6 +9,19 @@ import { runMigrations } from './migrate.mjs';
 import { createTemporaryOptionFile } from '../core/mysql-option-file.mjs';
 
 const argument = (name) => { const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : null; };
+
+export function verifyDumpMigrationLedger(dump, migrationsPath) {
+  const records = new Map([...dump.matchAll(/\('([^']+\.sql)'\s*,\s*'([a-f0-9]{64})'/gi)]
+    .map((match) => [match[1], match[2].toLowerCase()]));
+  for (const [migrationId, recordedChecksum] of records) {
+    const migrationPath = join(resolve(migrationsPath), migrationId);
+    if (!existsSync(migrationPath)) throw new Error(`Backup references unavailable migration: ${migrationId}`);
+    const sql = readFileSync(migrationPath, 'utf8').replace(/^\uFEFF/, '');
+    const expectedChecksum = createHash('sha256').update(sql).digest('hex');
+    if (recordedChecksum !== expectedChecksum) throw new Error(`Backup migration checksum does not match current code: ${migrationId}`);
+  }
+  return { migrations: [...records.keys()].sort() };
+}
 
 export async function restoreDatabase({ configPath, backupPath, migrationsPath }) {
   const config = loadDatabaseConfig(configPath);
@@ -17,6 +31,7 @@ export async function restoreDatabase({ configPath, backupPath, migrationsPath }
   if (!config.mysqlClientPath || !existsSync(config.mysqlClientPath)) throw new Error('找不到 mysql client executable');
   const dump = readFileSync(source, 'utf8').replace(/^\uFEFF/, '');
   if (!dump.startsWith('-- MySQL dump') || !dump.includes('CREATE TABLE `users`')) throw new Error('Backup verification failed; file is not a WDWELT MySQL dump');
+  verifyDumpMigrationLedger(dump, migrationsPath);
   const referencedDatabases = [
     ...[...dump.matchAll(/-- Current Database: `([^`]+)`/g)].map((match) => match[1]),
     ...[...dump.matchAll(/\bUSE\s+`([^`]+)`\s*;/gi)].map((match) => match[1]),
@@ -35,6 +50,7 @@ export async function restoreDatabase({ configPath, backupPath, migrationsPath }
       child.once('exit', (code) => code === 0 ? resolveRestore() : reject(new Error(`mysql restore failed with exit code ${code}: ${errorText.trim()}`)));
       const input = createReadStream(source);
       input.once('error', (error) => { child.kill(); reject(error); });
+      child.stdin.write(`USE \`${config.database}\`;\n`);
       input.pipe(child.stdin);
     });
   } finally { option.remove(); }

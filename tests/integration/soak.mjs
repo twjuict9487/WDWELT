@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -12,16 +13,20 @@ const temporaryRoot = mkdtempSync(join(tmpdir(), 'wdwelt soak '));
 const buildRoot = join(temporaryRoot, 'current');
 const configPath = join(temporaryRoot, 'config.json');
 const runPath = join(temporaryRoot, 'run');
+const reservation=createServer();
+await new Promise((resolveListen)=>reservation.listen(0,'127.0.0.1',resolveListen));
+const testPort=reservation.address().port;
+await new Promise((resolveClose)=>reservation.close(resolveClose));
 cpSync(sourceBuildRoot, buildRoot, { recursive: true });
 writeFileSync(configPath, JSON.stringify({
-  port: 8080, bindAddress: '127.0.0.1', canonicalHost: '127.0.0.1', canonicalUrl: 'http://127.0.0.1:8080',
+  port: testPort, bindAddress: '127.0.0.1', canonicalHost: '127.0.0.1', canonicalUrl: `http://127.0.0.1:${testPort}`,
   installPath: temporaryRoot, currentPath: buildRoot, logPath: join(temporaryRoot, 'logs'), runPath,
   healthIntervalSeconds: 1, healthTimeoutSeconds: 2, healthFailureThreshold: 3, recoveryCooldownSeconds: 2,
   maintenanceLockMinutes: 1, logRetentionDays: 2, logMaxBytes: 100_000,
 }));
 
 const child = spawn(process.execPath, [join(projectRoot, 'server/app/server.mjs'), '--root', buildRoot, '--config', configPath], {
-  cwd: projectRoot, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
+  cwd: projectRoot, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, env:{...process.env,WDWELT_TEST_PORT:'1'},
 });
 let childError = '';
 child.stderr.on('data', (chunk) => { childError += chunk.toString(); });
@@ -33,10 +38,11 @@ const memorySamples = [];
 const startedAt = Date.now();
 let nextSampleAt = 0;
 let runError;
+let concurrent60 = { attempted: 0, succeeded: 0 };
 
 async function waitForHealth() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    try { const response = await fetch('http://127.0.0.1:8080/health/live'); if (response.ok) return; } catch { /* retry */ }
+    try { const response = await fetch(`http://127.0.0.1:${testPort}/health/live`); if (response.ok) return; } catch { /* retry */ }
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
   throw new Error(`production host did not become healthy: ${childError}`);
@@ -44,10 +50,16 @@ async function waitForHealth() {
 
 try {
   await waitForHealth();
+  const burst = await Promise.allSettled(Array.from({ length: 60 }, async () => {
+    const response = await fetch(`http://127.0.0.1:${testPort}/health/live`, { signal: AbortSignal.timeout(2_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  }));
+  concurrent60 = { attempted: burst.length, succeeded: burst.filter((item) => item.status === 'fulfilled' && item.value.status === 'ok').length };
   while (Date.now() - startedAt < durationMs) {
     inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
     try {
-      const response = await fetch('http://127.0.0.1:8080/health/live', { signal: AbortSignal.timeout(2_000) });
+      const response = await fetch(`http://127.0.0.1:${testPort}/health/live`, { signal: AbortSignal.timeout(2_000) });
       const body = await response.json();
       requests += 1;
       if (!response.ok || body.status !== 'ok' || !body.version || !body.build) failures += 1;
@@ -78,13 +90,13 @@ const firstRss = memorySamples[0]?.rss ?? 0;
 const midpointRss = memorySamples[Math.floor(memorySamples.length / 2)]?.rss ?? firstRss;
 const endRss = memorySamples.at(-1)?.rss ?? firstRss;
 const result = {
-  elapsedSeconds, requests, failures, maxInFlight,
+  elapsedSeconds, requests, failures, maxInFlight, concurrent60,
   hostRssStartBytes: firstRss, hostRssMidpointBytes: midpointRss, hostRssEndBytes: endRss,
   hostRssDeltaBytes: endRss - firstRss, hostRssTailDeltaBytes: endRss - midpointRss,
   hostRssPeakBytes: memorySamples.length ? Math.max(...memorySamples.map((sample) => sample.rss)) : 0, memorySamples,
-  restartLoops: 0, hostExitCode: child.exitCode, orphanProcess: child.exitCode === null,
+  restartLoops: 0, hostExitCode: child.exitCode, orphanProcess: child.exitCode === null, childError,
 };
 console.log(JSON.stringify(result, null, 2));
 rmSync(temporaryRoot, { recursive: true, force: true });
 if (runError) throw runError;
-if (failures || maxInFlight > 1 || child.exitCode !== 0) process.exitCode = 1;
+if (failures || concurrent60.succeeded !== 60 || maxInFlight > 1 || child.exitCode !== 0) process.exitCode = 1;

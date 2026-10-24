@@ -10,7 +10,7 @@ const argument = (name) => {
   return index >= 0 ? process.argv[index + 1] : null;
 };
 
-export async function bootstrapRuntimeUser({ adminConfigPath, runtimeConfigPath }) {
+export async function bootstrapRuntimeUser({ adminConfigPath, runtimeConfigPath, rotateRuntime = false }) {
   const admin = loadDatabaseConfig(adminConfigPath);
   if (admin.database !== 'g2') throw new Error('Runtime bootstrap 只允許既有 g2 database');
   const connection = await createDatabaseConnection(databaseConnectionOptions(admin));
@@ -24,11 +24,11 @@ export async function bootstrapRuntimeUser({ adminConfigPath, runtimeConfigPath 
     const invalidHosts = accounts.filter((row) => row.Host !== 'localhost');
     if (invalidHosts.length) throw new Error('發現非 localhost 的 wdwelt_app account；未自動修改');
 
-    if (existsSync(runtimeConfigPath)) runtimeConfig = loadDatabaseConfig(runtimeConfigPath);
-    else if (localhostAccount) throw new Error('wdwelt_app 已存在但缺少可驗證的 runtime credential config；未重設密碼');
+    if (existsSync(runtimeConfigPath) && !rotateRuntime) runtimeConfig = loadDatabaseConfig(runtimeConfigPath);
+    else if (localhostAccount && !rotateRuntime) throw new Error('wdwelt_app 已存在但缺少可驗證的 runtime credential config；未重設密碼');
     else {
       runtimeConfig = {
-        host: '127.0.0.1', port: 3306, database: 'g2', user: 'wdwelt_app',
+        host: '127.0.0.1', port: admin.port, database: 'g2', user: 'wdwelt_app',
         password: randomBytes(32).toString('base64url'),
         connectionLimit: 5, connectTimeoutMs: 3000, readyTimeoutMs: 2000,
         reconnectInitialSeconds: 1, reconnectMaxSeconds: 30,
@@ -39,9 +39,12 @@ export async function bootstrapRuntimeUser({ adminConfigPath, runtimeConfigPath 
       writeProtectedJson(runtimeConfigPath, runtimeConfig);
       createdConfig = true;
     }
-    if (runtimeConfig.database !== 'g2' || runtimeConfig.user !== 'wdwelt_app' || !['127.0.0.1', 'localhost', '::1'].includes(runtimeConfig.host)) throw new Error('Runtime database config 不符合 localhost g2/wdwelt_app');
+    if (runtimeConfig.database !== 'g2' || runtimeConfig.user !== 'wdwelt_app' || !['127.0.0.1', 'localhost', '::1'].includes(runtimeConfig.host) || runtimeConfig.port !== admin.port) throw new Error('Runtime database config 不符合 administrative connection 的 localhost/port/g2/wdwelt_app');
+    if (runtimeConfig.password === admin.password) throw new Error('Runtime and administrative MySQL passwords must differ.');
     if (!localhostAccount) {
       await connection.query(`CREATE USER 'wdwelt_app'@'localhost' IDENTIFIED BY ${connection.escape(runtimeConfig.password)}`);
+    } else if (rotateRuntime) {
+      await connection.query(`ALTER USER 'wdwelt_app'@'localhost' IDENTIFIED BY ${connection.escape(runtimeConfig.password)}`);
     } else {
       const verification = await createDatabaseConnection(databaseConnectionOptions(runtimeConfig, { database: undefined }));
       try { await verification.query('SELECT 1'); } finally { await verification.end(); }
@@ -59,7 +62,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const adminConfigPath = argument('--admin-config') ?? process.env.WDWELT_DB_ADMIN_CONFIG;
   const runtimeConfigPath = argument('--runtime-config');
   if (!adminConfigPath || !runtimeConfigPath) { console.error('需要 --admin-config 與 --runtime-config path。'); process.exitCode = 1; }
-  else bootstrapRuntimeUser({ adminConfigPath: resolve(adminConfigPath), runtimeConfigPath: resolve(runtimeConfigPath) })
+  else bootstrapRuntimeUser({ adminConfigPath: resolve(adminConfigPath), runtimeConfigPath: resolve(runtimeConfigPath), rotateRuntime: process.argv.includes('--rotate-runtime') })
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => { console.error(error.message); process.exitCode = 1; });
 }

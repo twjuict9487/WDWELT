@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { backupDatabase, buildMySqlDumpArguments, verifyBackupDump } from '../db/operations/backup.mjs';
 import { createTemporaryOptionFile } from '../db/core/mysql-option-file.mjs';
 
-const tables = ['users', 'sessions', 'courses', 'timetable_entries', 'course_progress', 'password_reset_tokens', 'recovery_config', 'push_subscriptions', 'push_deliveries', 'schema_migrations'];
+const tables = ['users', 'sessions', 'courses', 'timetable_entries', 'course_progress', 'password_reset_tokens', 'recovery_config', 'push_subscriptions', 'push_deliveries', 'developer_audit_log', 'schema_migrations'];
 const dump = ({ marker = '-- Dump completed', includedTables = tables } = {}) => [
   'CREATE DATABASE /*!32312 IF NOT EXISTS*/ `g2`;',
   'USE `g2` ;',

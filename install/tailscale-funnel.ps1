@@ -42,6 +42,7 @@ function Write-FunnelConfig([string]$Origin) {
   }
   $config.databaseConfigPath = 'database.runtime.json'
   $config.adminDatabaseConfigPath = 'database.admin.json'
+  $config.developerAdminConfigPath = 'developer-admin.json'
   [IO.Directory]::CreateDirectory((Split-Path -Parent $ConfigPath)) | Out-Null
   $temporary = "$ConfigPath.$PID.tmp"
   $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $temporary -Encoding UTF8

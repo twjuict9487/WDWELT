@@ -5,6 +5,7 @@ import {
   applySecurityHeaders,
   assertRequestOrigin,
   createAuthRateLimiter,
+  createFixedWindowLimiter,
   createSecurityPolicy,
 } from '../server/app/security.mjs';
 
@@ -62,6 +63,13 @@ describe('public HTTPS exposure security', () => {
     expect(limiter.allowRecovery('teacher', 1)).toBe(false);
   });
 
+  it('returns bounded fixed-window decisions with Retry-After timing', () => {
+    const limiter=createFixedWindowLimiter({maximumEntries:2});
+    expect(limiter.consume('api','client-a',{limit:2,windowMs:60_000},0).allowed).toBe(true);
+    expect(limiter.consume('api','client-a',{limit:2,windowMs:60_000},1).allowed).toBe(true);
+    expect(limiter.consume('api','client-a',{limit:2,windowMs:60_000},2)).toMatchObject({allowed:false,retryAfter:60});
+  });
+
   it('public-disables registration and master recovery without touching the database', async () => {
     const security = createSecurityPolicy({ exposureMode: 'tailscale-funnel', publicOrigin: 'https://teacher.example-tailnet.ts.net', bindAddress: '127.0.0.1' });
     const handler = createApiHandler({ database: { execute: () => { throw new Error('database must not be called'); } }, security });
@@ -69,5 +77,23 @@ describe('public HTTPS exposure security', () => {
     expect(await invoke(handler, { url: '/api/auth/register', method: 'POST', headers: { origin: security.publicOrigin } })).toMatchObject({ status: 404 });
     expect(await invoke(handler, { url: '/api/auth/recovery/verify', method: 'POST', headers: { origin: security.publicOrigin } })).toMatchObject({ status: 404 });
     expect(await invoke(handler, { url: '/api/auth/login', method: 'POST' })).toMatchObject({ status: 403 });
+  });
+
+  it('keeps private account labels behind the privileged role boundary', async () => {
+    const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('../server/app/api.mjs', import.meta.url), 'utf8'));
+    expect(source).toContain("if (user.role !== 'privileged') throw new HttpError(403, 'Privileged access required.')");
+    expect(source).toContain('SELECT id, username, admin_notes AS private_label FROM users ORDER BY id');
+    expect(source).toContain('UPDATE users SET admin_notes=?, account_updated_at=CURRENT_TIMESTAMP(3) WHERE id=?');
+    expect(source).not.toContain('SELECT id, username, password_hash, admin_notes AS private_label');
+  });
+
+  it('keeps monitoring privileged and makes inactivity detection non-destructive', async () => {
+    const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('../server/app/api.mjs', import.meta.url), 'utf8'));
+    expect(source).toContain("url.pathname === '/api/privileged/monitor'");
+    expect(source).toContain("if (user.role !== 'privileged') throw new HttpError(403, 'Privileged access required.')");
+    expect(source).toContain('automaticDeletion:false');
+    expect(source).toContain('UPDATE users SET last_seen_at=CURRENT_TIMESTAMP(3) WHERE id=?');
+    expect(source).toContain('lastSeenAt:account.last_seen_at == null ? null');
+    expect(source).not.toMatch(/privileged\/monitor[\s\S]{0,6000}DELETE FROM users/);
   });
 });

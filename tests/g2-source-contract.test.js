@@ -139,7 +139,7 @@ describe('G2 source-of-truth and secret boundaries', () => {
     expect(runtime).not.toMatch(/\b(?:cloudflare|ngrok|upnp|portproxy|port\s*forward)\b/i);
     expect(runtime).not.toMatch(/https?:\/\/(?!localhost\b|127\.0\.0\.1\b)[a-z0-9]/i);
     expect(source('src/api.ts')).toContain('fetch(path');
-    expect(source('db/operations/bootstrap.mjs')).toContain("host: '127.0.0.1', port: 3306");
+    expect(source('db/operations/bootstrap.mjs')).toContain("host: '127.0.0.1', port: admin.port");
     const funnel = source('install/tailscale-funnel.ps1');
     expect(funnel).toContain("funnel --bg --https=443 http://127.0.0.1:8080");
     expect(funnel).toContain("allowRegistration = $false");
