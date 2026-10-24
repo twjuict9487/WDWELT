@@ -957,3 +957,11 @@ code {
     border: 3px solid #fff;
   }
 }
+/* Classroom module keeps existing controls and layout; long names wrap on phones. */
+.learning-module { overflow-wrap: anywhere; }
+.learning-module form { display: grid; gap: 0.8rem; margin-block: 1rem; }
+.learning-module input, .learning-module select, .learning-module textarea { max-width: 100%; box-sizing: border-box; }
+.learning-module textarea { min-height: 7rem; width: 100%; }
+.learning-module img { max-width: 100%; height: auto; background: white; }
+.learning-module details { margin-block: 0.7rem; }
+.learning-module button { margin: 0.25rem; }

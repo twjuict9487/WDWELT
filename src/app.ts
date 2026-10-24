@@ -1,4 +1,5 @@
 import './styles.css';
+import { learningAvailable, mountLearning, showLearningJoinPreview } from './learning';
 import {
   ApiError,
   clearProgress,
@@ -148,6 +149,8 @@ let debugReport = '';
 let privilegedAccounts: PrivilegedAccount[] | null = null;
 let privilegedMonitor: PrivilegedMonitorReport | null = null;
 let privilegedNotice = '';
+let learningEnabled=false;
+let disposeLearning:(()=>void)|null=null;
 let timelineContextSignature = '';
 let expandedTimelineRole: TimelineRole | null = null;
 let undoRecord: UndoRecord | null = null;
@@ -322,7 +325,12 @@ async function loadSignedInState(session: AuthSession): Promise<void> {
   const controller = new AbortController();
   accountLoadController = controller;
   authenticatedUser = session.user;
+  learningEnabled=await learningAvailable();
   if (sessionExpiry !== session) setSessionExpiry(session);
+  if(learningEnabled&&/^\/(?:classroom|join|evaluate)\/?$/.test(location.pathname)){
+    if(controller.signal.aborted)return;
+    screen='home';dataError=null;render();return;
+  }
   screen = 'loading';
   dataError = null;
   render();
@@ -363,6 +371,7 @@ function renderLoading(): void {
 
 function renderLogin(): void {
   root.innerHTML = page('登入', `
+    <div id="learning-invite-preview"></div>
     ${authNotice ? `<p class="status success" role="status">${escapeHtml(authNotice)}</p>` : ''}
     <form id="login-form" class="panel form-panel auth-panel">
       <label>帳號<input name="username" maxlength="50" autocomplete="username" value="${escapeHtml(loginUsername)}" required /></label>
@@ -375,6 +384,7 @@ function renderLogin(): void {
       </div>
     </form>
   `);
+  void showLearningJoinPreview(document.querySelector('#learning-invite-preview'));
   document.querySelector('#open-register')?.addEventListener('click', () => { authNotice = null; screen = 'register'; render(); });
   document.querySelector('#open-recovery')?.addEventListener('click', () => { authNotice = null; screen = 'recovery'; render(); });
   document.querySelector<HTMLFormElement>('#login-form')?.addEventListener('submit', async (event) => {
@@ -1190,6 +1200,7 @@ async function collectDeveloperReport(): Promise<Record<string, unknown>> {
 function renderSettings(): void {
   const hasProgress = Object.keys(state.progressByCourse).length > 0;
   root.innerHTML = page('設定', `
+    ${learningEnabled?'<section class="panel settings-group"><a class="button secondary" href="/classroom/">課堂活動／我的班級</a></section>':''}
     <section class="panel settings-group" aria-labelledby="appearance-title">
       <h2 id="appearance-title">外觀</h2>
       <div class="setting-options" role="group" aria-label="外觀">
@@ -1404,6 +1415,13 @@ function renderSettings(): void {
 }
 
 function render(): void {
+  if(disposeLearning){disposeLearning();disposeLearning=null;}
+  if(authenticatedUser&&learningEnabled&&/^\/(?:classroom|join|evaluate)\/?$/.test(location.pathname)&&screen!=='forced-password'){
+    root.innerHTML=page('課堂活動','<div id="learning-root"></div>');
+    const moduleNav=root.querySelector('.desktop-nav');
+    if(moduleNav)moduleNav.innerHTML='<a class="desktop-nav-item" href="/">回 Organizer</a><a class="desktop-nav-item active" href="/classroom/" aria-current="page">課堂活動／我的班級</a>';
+    disposeLearning=mountLearning(document.querySelector<HTMLElement>('#learning-root')!);return;
+  }
   if (!debugModeEnabled(globalThis.location.search)) debugNow = null;
   switch (screen) {
     case 'loading': renderLoading(); break;
@@ -1511,6 +1529,10 @@ globalThis.addEventListener('popstate', (event) => {
   }
 
   applyRoute(target);
+});
+
+globalThis.addEventListener('hashchange',()=>{
+  if(authenticatedUser&&learningEnabled&&/^\/(?:join|evaluate)\/?$/.test(location.pathname))render();
 });
 
 globalThis.addEventListener('beforeunload', (event) => {

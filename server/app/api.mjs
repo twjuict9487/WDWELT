@@ -15,6 +15,7 @@ import { DatabaseUnavailableError } from './db.mjs';
 import { readResetCookie, resetCookie, RESET_SECONDS } from './recovery.mjs';
 import { assertRequestOrigin, createAuthRateLimiter, createFixedWindowLimiter, trustworthyClientKey } from './security.mjs';
 import { endpointHash } from './push.mjs';
+import { createLearningApi } from './learning-api.mjs';
 
 import { readRecoveryConfig, recoveryStatus, verifyRecoveryPassword } from '../../db/core/recovery-config.mjs';
 import { toTaipeiIsoString } from '../../db/core/time.mjs';
@@ -152,11 +153,12 @@ function validateTimetableBody(body) {
   });
 }
 
-export function createApiHandler({ database, pushService = null, log = () => {}, requestMonitor = null, security = {
+export function createApiHandler({ database, pushService = null, log = () => {}, requestMonitor = null, learning = {}, security = {
   publicOrigin: 'http://localhost', secureCookies: false, requireSameOrigin: false,
   allowRegistration: true, allowMasterRecovery: true, minimumPasswordLength: 3, minimumRecoveryKeyLength: 3, rateLimit: null,
   limits: null,
 } }) {
+  const learningApi=createLearningApi({database,log,...learning});
   const sessionSeconds = SESSION_DURATION_SECONDS;
   const limiter = createAuthRateLimiter(security.rateLimit);
   const limits = security.limits ?? null;
@@ -174,8 +176,15 @@ export function createApiHandler({ database, pushService = null, log = () => {},
     if (!url.pathname.startsWith('/api/')) return false;
     try {
       const clientKey = trustworthyClientKey(request, security);
-      limited('general', clientKey, limits?.general);
+      if(!url.pathname.startsWith('/api/learning/'))limited('general', clientKey, limits?.general);
       assertRequestOrigin(request, security);
+      if(url.pathname.startsWith('/api/learning/')){
+        const anonymous=url.pathname==='/api/learning/join/preview'||url.pathname==='/api/learning/status';
+        const user=anonymous?null:await authenticatedUser(request,response,database,security);
+        limited('learning-general',user?`account:${user.id}`:clientKey,limits?.general?{...limits.general,limit:user?limits.general.limit:Math.max(600,limits.general.limit)}:null);
+        if(user?.mustChangePassword)throw new HttpError(403,'請先更換臨時密碼');
+        return await learningApi({request,response,url,user,readJson,sendJson});
+      }
       if (url.pathname === '/api/auth/recovery/status' && request.method === 'GET') {
         if (!security.allowMasterRecovery) {
           sendJson(response, 200, { available: false });

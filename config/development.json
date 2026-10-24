@@ -1,5 +1,6 @@
 {
   "port": 8080,
+  "classroomActivitiesEnabled": false,
   "bindAddress": "127.0.0.1",
   "canonicalHost": "127.0.0.1",
   "canonicalUrl": "http://127.0.0.1:8080",

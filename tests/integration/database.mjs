@@ -190,7 +190,7 @@ try {
     database.execute('SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = ?', [testDatabase]),
     database.execute('SELECT COUNT(*) AS count FROM schema_migrations'),
   ]);
-  assert(Number(tableCount[0].count) === 11 && Number(migrationCount[0].count) === 10, 'migrations created lifecycle, session, push, developer audit and last-seen tracking with Taipei timestamps');
+  assert(Number(tableCount[0].count) === 30 && Number(migrationCount[0].count) === 12, 'migrations created Organizer and isolated classroom/activity tables with Taipei timestamps');
   console.log(`DB integration passed: ${checks.length} checks in ${testDatabase}`);
   for (const check of checks) console.log(`  PASS ${check}`);
 } finally {

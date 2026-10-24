@@ -24,6 +24,7 @@ export function loadDatabaseConfig(configPath) {
     configPath: absolutePath,
     port: integer(raw.port ?? 3306, 'port', 1, 65535),
     connectionLimit: integer(raw.connectionLimit ?? 5, 'connectionLimit', 1, 20),
+    queueLimit: integer(raw.queueLimit ?? 20, 'queueLimit', 1, 1000),
     connectTimeoutMs: integer(raw.connectTimeoutMs ?? 3000, 'connectTimeoutMs', 250, 30_000),
     readyTimeoutMs: integer(raw.readyTimeoutMs ?? 2000, 'readyTimeoutMs', 250, 30_000),
     reconnectInitialSeconds: integer(raw.reconnectInitialSeconds ?? 1, 'reconnectInitialSeconds', 1, 60),

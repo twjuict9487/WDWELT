@@ -22,6 +22,8 @@
     "sessions:revoke": "node db/operations/sessions.mjs",
     "developer:setup": "node db/operations/developer-admin.mjs --config config/local/developer-admin.json",
     "test:db": "node tests/integration/database.mjs",
+    "test:learning": "node tests/integration/learning.mjs",
+    "learning:creator": "node db/operations/learning-creator.mjs",
     "test:restore": "node tests/integration/restore-database.mjs",
     "soak:g2": "node tests/integration/soak.mjs",
     "preview": "vite preview",
@@ -32,12 +34,17 @@
     "setup:target": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/target-environment.ps1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/qrcode": "^1.5.6",
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.1",
     "vitest": "^3.2.4"
   },
   "dependencies": {
     "mysql2": "^3.24.3",
+    "qrcode": "^1.5.4",
     "web-push": "^3.6.7"
   }
 }

@@ -40,10 +40,19 @@ export async function restoreDatabase({ configPath, backupPath, migrationsPath }
   if (referencedDatabases.some((database) => database.toLocaleLowerCase('en-US') !== config.database.toLocaleLowerCase('en-US'))) {
     throw new Error('Backup references a different database; restore was not started');
   }
+  // A pre-learning dump cannot safely replace users underneath retained learning FK/history tables.
+  // Refuse before mysql imports any SQL, including when the extension is currently disabled.
+  const inspection = await createDatabaseConnection(databaseConnectionOptions(config));
+  try {
+    const [existingLearning] = await inspection.execute("SELECT table_name AS name FROM information_schema.tables WHERE table_schema=? AND LEFT(table_name,9)='learning_'", [config.database]);
+    if(existingLearning.some(({name})=>!dump.includes(`CREATE TABLE \`${name}\``))) {
+      throw new Error('Backup omits existing classroom/activity tables; use a full compatible backup. Restore was not started.');
+    }
+  } finally { await inspection.end(); }
   const option = createTemporaryOptionFile(config);
   try {
     await new Promise((resolveRestore, reject) => {
-      const child = spawn(config.mysqlClientPath, [`--defaults-extra-file=${option.optionPath}`, '--one-database', `--database=${config.database}`], { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+      const child = spawn(config.mysqlClientPath, [`--defaults-extra-file=${option.optionPath}`, '--default-character-set=utf8mb4', '--binary-mode', '--one-database', `--database=${config.database}`], { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
       let errorText = '';
       child.stderr.on('data', (chunk) => { if (errorText.length < 16_384) errorText += chunk.toString(); });
       child.once('error', reject);

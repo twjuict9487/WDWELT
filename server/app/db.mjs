@@ -44,7 +44,7 @@ export class DatabaseManager {
     this.#pool = createDatabasePool(databaseConnectionOptions(config, {
       waitForConnections: true,
       connectionLimit: config.connectionLimit,
-      queueLimit: 20,
+      queueLimit: config.queueLimit ?? 20,
       connectTimeout: config.connectTimeoutMs,
       decimalNumbers: true,
       enableKeepAlive: true,

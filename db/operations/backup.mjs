@@ -14,6 +14,8 @@ const migrationTableRequirements = [
   { migration: '007_web_push.sql', table: 'push_subscriptions' },
   { migration: '007_web_push.sql', table: 'push_deliveries' },
   { migration: '008_developer_admin.sql', table: 'developer_audit_log' },
+  ...['learning_creators','learning_workspaces','learning_roles','learning_classrooms','learning_teachers','learning_students','learning_invite_policies','learning_invite_tokens','learning_notifications','learning_audit'].map((table)=>({migration:'011_classroom_identity.sql',table})),
+  ...['learning_activities','learning_participants','learning_groups','learning_group_members','learning_criteria','learning_rounds','learning_eligibility','learning_evaluations','learning_scores'].map((table)=>({migration:'012_learning_activities.sql',table})),
 ];
 
 const removeIfPresent = (path) => { try { unlinkSync(path); } catch { /* best effort */ } };

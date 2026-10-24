@@ -76,11 +76,11 @@ CREATE TABLE \`users\` (id INT NOT NULL);
         verification.query("SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name IN ('account_role','account_status','must_change_password')"),
       ]);
       const actual = [migrations, users, courses, timetable, progress, archived, columns].map((rows) => Number(rows[0].count));
-      const expected = [9, 9, 103, 132, 27, 18, 3];
+      const expected = [12, 9, 103, 132, 27, 18, 3];
       if (actual.some((value, index) => value !== expected[index])) throw new Error(`Current baseline verification failed: ${JSON.stringify({ actual, expected })}`);
     } else {
       const [marker] = await verification.query('SELECT value FROM restore_marker');
-      if (marker[0]?.value !== 42 || Number(migrations[0].count) !== 10) throw new Error('Fixture restore verification failed');
+      if (marker[0]?.value !== 42 || Number(migrations[0].count) !== 12) throw new Error('Fixture restore verification failed');
       const [recovery] = await verification.query("SELECT password_hash, salt, DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s.%f') AS updated_at FROM recovery_config");
       if (!recovery[0]?.password_hash.equals(master.hash) || !recovery[0]?.salt.equals(master.salt)) throw new Error('Recovery configuration was not preserved by restore');
       if (recovery[0]?.updated_at !== '2026-10-02 07:00:00.000000') throw new Error(`Recovery timestamp was not migrated to Asia/Taipei: ${recovery[0]?.updated_at}`);

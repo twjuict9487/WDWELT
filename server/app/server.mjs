@@ -59,7 +59,7 @@ try {
   if (runtimeDatabaseConfig.database === 'g2' && runtimeDatabaseConfig.user !== 'wdwelt_app') {
     throw new Error('Production host must use the wdwelt_app runtime MySQL account.');
   }
-  database = new DatabaseManager(runtimeDatabaseConfig, log);
+  database = new DatabaseManager({...runtimeDatabaseConfig,queueLimit:config.classroomActivitiesEnabled===true?Math.max(100,runtimeDatabaseConfig.queueLimit):runtimeDatabaseConfig.queueLimit}, log);
 } catch (error) {
   log('error', 'database_config_invalid', error.message);
   database = new UnavailableDatabaseManager({}, log);
@@ -70,7 +70,8 @@ try { pushService = createPushService({ database, config: loadPushConfig(config.
 catch (error) { log('error', 'push_config_invalid', error.message); }
 pushService?.start();
 const requestMonitor = createRequestMonitor();
-const apiHandler = createApiHandler({ database, pushService, log, security, requestMonitor });
+const apiHandler = createApiHandler({ database, pushService, log, security, requestMonitor,
+  learning:{enabled:config.classroomActivitiesEnabled===true,publicOrigin:security.publicOrigin,limits:config.classroomActivityLimits??{}} });
 const currentMigration = () => database.currentMigration();
 const checkApplicationDatabase = async () => {
   if (!await database.checkReady()) return false;
