@@ -76,7 +76,7 @@ npm.cmd audit --omit=dev --json
 - 匿名預覽採 POST body，而非 URL query，避免秘密進 request path；GET 不改班級／活動。原有 authentication middleware 的 Session／last_seen 維護照常。
 - 新模組 general 限流按有效帳號；匿名 lookup 使用較高且有限的共用桶。既有 Organizer 限流保持原設定。模組頁不額外載入私人 Organizer 課表。
 - Web Push 仍選用，加入只發站內 DB 通知。Funnel 原設定預設停用公開註冊；測試使用既有 fixture 帳號，不改此安全預設。
-- 本地 `wdwelt.sql` 是舊 004 資料的 Organizer baseline，未納入 Git，也沒有用它覆寫正式或新活動資料；新表由 migration runner 建立。還原時，舊 dump 若缺目標已存在的新表會在任何匯入前拒絕。
+- 原根目錄 `wdwelt.sql` 是舊 004 資料的 Organizer baseline，已改名封存到 `runtime/archive/legacy-organizer-data.sql`；未納入 Git，也沒有用它覆寫正式或新活動資料。它不同於 Build 產生的空白結構 SQL。新表由 migration runner 建立；還原時，舊 dump 若缺目標已存在的新表會在任何匯入前拒絕。
 - Windows mysql client 還原須明確 `--default-character-set=utf8mb4 --binary-mode`，已用含中文與留言的完整 dump 驗證。
 - 開發過程發現正式 8080 的 root 指向 repository `dist`，一般 build 曾寫入該靜態目錄。已將本輪 feature build 保存在忽略的 runtime，並以原 HEAD 重建／恢復原前端（原 asset `index-DAJWmf6f.js`）；正式 PID 保持不變。build metadata 的 build ID 依原 PID 記錄恢復，timestamp 由該 build ID 重建，非宣稱逐 byte 還原原 metadata。後續驗收統一使用 `--output runtime/learning-build`，整合測試也只讀取此隔離目錄。
 - **未執行**：實體 iPhone／Android 相機掃碼、Safari／Firefox、真實四十人課堂、校內 LAN／公網 Funnel 現場驗收，以及正式安裝／防火牆／自啟／watchdog 更新。這些不是 headless 或 loopback 測試可證明的項目。

@@ -1,6 +1,8 @@
 export interface BuildMetadata {
   releaseLabel: string;
   version: string;
+  applicationVersion?: string;
+  schemaVersion?: string;
   build: string;
   buildTimestamp: string;
 }

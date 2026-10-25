@@ -85,6 +85,8 @@ export function createRequestHandler({ root, startedAt = Date.now(), onHealth, c
           app: 'ok',
           database: databaseReady ? 'ok' : 'unavailable',
           version: metadata.version,
+          applicationVersion: metadata.applicationVersion ?? metadata.version,
+          requiredSchemaVersion: metadata.schemaVersion ?? null,
           build: metadata.build,
           buildTime: metadata.buildTimestamp,
           uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),

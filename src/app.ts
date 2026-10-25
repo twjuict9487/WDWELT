@@ -1288,6 +1288,7 @@ function renderSettings(): void {
       <p>${buildMetadata ? `${escapeHtml(buildMetadata.releaseLabel)} ${escapeHtml(buildMetadata.version)}` : '版本資訊無法確認'}</p>
       <p>Build: ${buildMetadata ? escapeHtml(formatBuildTime(buildMetadata.buildTimestamp)) : '無法確認'}</p>
       <p>Build ID: ${buildMetadata ? escapeHtml(buildMetadata.build) : '無法確認'}</p>
+      ${buildMetadata?.schemaVersion ? `<p>所需資料庫結構：${escapeHtml(buildMetadata.schemaVersion)}（實際狀態請查 /health/ready）</p>` : ''}
       <p>目前 URL：${escapeHtml(globalThis.location.href)}</p>
       <p>Host 狀態：<span id="host-status">${hostStatus}</span></p>
       ${button('copy-diagnostics', '複製系統資訊', 'secondary')}

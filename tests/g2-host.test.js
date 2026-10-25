@@ -27,6 +27,13 @@ async function withServer(root, operation, health = { checkDatabase: async () =>
 }
 
 describe('G2 production host', () => {
+  it('distinguishes the combined build target from the actual database ledger', async () => {
+    const root = fixture();
+    writeFileSync(join(root, 'build-metadata.json'), JSON.stringify({ releaseLabel: 'G2 Pilot', version: '0.3.0012', applicationVersion: '0.3.0', schemaVersion: '0012', build: 'release-test', buildTimestamp: '2026-10-24T00:00:00.000Z' }));
+    await withServer(root, async (url) => {
+      expect(await (await fetch(`${url}/health/ready`)).json()).toMatchObject({ version: '0.3.0012', applicationVersion: '0.3.0', requiredSchemaVersion: '0012', migration: '001_initial.sql' });
+    });
+  });
   it('serves index, hashed assets, SPA routes and exact health metadata', async () => {
     const root = fixture();
     await withServer(root, async (url) => {

@@ -12,6 +12,7 @@ import mysql from '../../db/core/mysql-driver.mjs';
 import {DatabaseManager} from '../../server/app/db.mjs';
 import {writeProtectedJson} from '../../db/core/config.mjs';
 import {runMigrations} from '../../db/operations/migrate.mjs';
+import {createReleaseSchema} from '../../db/core/release.mjs';
 import {createLearningService} from '../../server/app/learning.mjs';
 import {createActivityService} from '../../server/app/learning-activities.mjs';
 import {provisionLearningCreator} from '../../db/operations/learning-creator.mjs';
@@ -39,6 +40,19 @@ try{
   assert.ok(connection);const dbName='wdwelt_test_learning';await connection.query(`CREATE DATABASE ${dbName} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`);
   const secret=randomUUID();await connection.query(`ALTER USER 'root'@'localhost' IDENTIFIED BY ${connection.escape(secret)}`);
   const config=join(root,'admin.json');writeProtectedJson(config,{host:'127.0.0.1',port,user:'root',password:secret,database:dbName,mysqlDumpPath:join(bin,'mysqldump.exe'),mysqlClientPath:join(bin,'mysql.exe')});
+  assert.notEqual(port,3306,'Never test against the installed MySQL service');
+  await connection.query('CREATE DATABASE wdwelt_test_release CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci');
+  const releaseConnection=await mysql.createConnection({host:'127.0.0.1',port,user:'root',password:secret,database:'wdwelt_test_release',multipleStatements:true});
+  try {
+    const {sql}=createReleaseSchema(resolve('db/migrations'),'0.3.0');
+    await releaseConnection.query(sql);
+    assert.equal(Number((await releaseConnection.query('SELECT COUNT(*) AS count FROM schema_migrations'))[0][0].count),12);
+    assert.equal(Number((await releaseConnection.query('SELECT COUNT(*) AS count FROM users'))[0][0].count),0);
+    await assert.rejects(releaseConnection.query(sql));
+    const releaseConfig=join(root,'release.json');writeProtectedJson(releaseConfig,{host:'127.0.0.1',port,user:'root',password:secret,database:'wdwelt_test_release'});
+    assert.ok((await runMigrations({configPath:releaseConfig})).applied.every((m)=>m.status==='already-applied'));
+    pass('combined fresh SQL imports all 12 migrations, has no accounts, rejects repeat import, and upgrade skips applied checksums');
+  } finally {await releaseConnection.end();}
   await runMigrations({configPath:config});assert.ok((await runMigrations({configPath:config})).applied.every((m)=>m.status==='already-applied'));pass('fresh migrations and repeat checksum ledger');
   await connection.query('CREATE DATABASE wdwelt_test_learning_upgrade CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci');
   const legacyMigrations=join(root,'legacy-migrations');mkdirSync(legacyMigrations);

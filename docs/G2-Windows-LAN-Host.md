@@ -25,7 +25,7 @@ WDWELT 建立的 inbound rule 固定為 TCP `8080`、local `192.168.0.18`、remo
 
 目前只知道 `192.168.0.0/22` 已核准。若合法教師裝置位於其他 routed VLAN，這條規則會阻擋連線；必須由 IT 提供額外 CIDR／range，再以 installer 的 `-AllowedRemoteAddress` 明確加入。不可用 `Any`、`Internet` 或 `0.0.0.0/0` 代替。
 
-正式 runtime 只需要本機 Node.js、packaged `node_modules`、production files 與 localhost MySQL，不呼叫外部 API／CDN／updater。WinGet、Node/MySQL 下載與 npm registry 都只是 installation-time dependency；完全無外網部署方式與 offline cache 準備命令見 `install/README.md`。
+正式 runtime 只需要本機 Node.js、packaged `node_modules`、production files 與 localhost MySQL，不呼叫外部 API／CDN／updater。WinGet、Node/MySQL 下載與 npm registry 都只是 installation-time dependency；完全無外網部署方式與 offline cache 準備命令見 [安裝器進階參考](../install/REFERENCE.md)。
 
 ## 日常命令
 
